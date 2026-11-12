@@ -3,12 +3,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
+import inc from 'semver/functions/inc.js'
 import { expect, it, vi } from 'vitest'
+import { PLUGIN_VERSION } from '../src/version.ts'
 import { payload } from './update-fixture.ts'
 
 it('constructs and calls the native updater without accessing the credential service', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'crowdtest-native-update-'))
-  const target = payload('0.2.17')
+  const target = payload(inc(PLUGIN_VERSION, 'patch'))
   try {
     const modules = {
       cordis: `export class Service { constructor(ctx, name) { this.ctx = ctx; ctx[name] = this } }`,
@@ -28,7 +30,7 @@ it('constructs and calls the native updater without accessing the credential ser
     await mkdir(join(profile, 'node_modules', 'dsh-crowdtest'), { recursive: true })
     const ctx = {
       profileContext: { dir: profile },
-      pluginManager: { listBundles: async () => [{ name: 'dsh-crowdtest', version: '0.2.16', source: 'dsh-crowdtest@0.2.16', installed: true, removable: true, enabled: true, official: false, availability: 'profile' }] },
+      pluginManager: { listBundles: async () => [{ name: 'dsh-crowdtest', version: PLUGIN_VERSION, source: `dsh-crowdtest@${PLUGIN_VERSION}`, installed: true, removable: true, enabled: true, official: false, availability: 'profile' }] },
       get credentials() { throw Error('Updater must not access saved credentials') },
     }
     const transport = vi.fn(async (_url, options) => {
