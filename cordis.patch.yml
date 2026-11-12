@@ -1,0 +1,4 @@
+# CrowdTest 众测插件：注册 /crowdtest 与 /crowdtest-upload 命令，并在插件页显示使用说明。
+- insert:
+    - id: crowdtest
+      name: dsh-crowdtest

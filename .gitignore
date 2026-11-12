@@ -1,0 +1,11 @@
+node_modules/
+lib/
+*.tgz
+.audit/
+.mock/
+generated_images/
+.dsh/
+.env
+.env.*
+*.local.json
+.DS_Store

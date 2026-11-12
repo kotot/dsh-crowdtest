@@ -1,0 +1,80 @@
+{
+  "name": "dsh-crowdtest",
+  "version": "0.2.11",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kotot/dsh-crowdtest.git"
+  },
+  "description": "CrowdTest 众测：在 DeepSeek Harness 桌面端领取众测任务、配置测试模型并自动上传会话",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "lib/index.js",
+  "icon": "./icon.png",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./icon": "./icon.png",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "cordis.patch.yml",
+    "icon.png",
+    "README.md"
+  ],
+  "engines": {
+    "dsh": ">=0.2.1-rc.1 <1.0.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-session": "*",
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-typert-protocol": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-session": {
+      "optional": true
+    },
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-typert-protocol": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-renderer"
+      ]
+    }
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "pack:tarball": "npm pack",
+    "check:package": "npm run build && node scripts/check-package.mjs",
+    "prepack": "npm run check:package",
+    "check:source": "node scripts/check-package.mjs --source"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.4",
+    "@types/react": "18.3.5",
+    "esbuild": "0.28.2",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "happy-dom": "20.11.6"
+  }
+}
