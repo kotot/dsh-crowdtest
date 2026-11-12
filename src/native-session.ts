@@ -88,24 +88,51 @@ export async function nativeSessionRevision(options: SourceOptions): Promise<str
   return `${current.revision}:${fileRevision(await fileStat(current.path))}`
 }
 
+// Node can consume several frames in one call, including skippable frames.
+function standardFrameEnd(bytes: Buffer, start: number): number {
+  if (start + 4 > bytes.length || bytes.readUInt32LE(start) !== 0xfd2fb528) {
+    throw new Error('原生会话包含非标准压缩帧')
+  }
+  const descriptor = bytes[start + 4]
+  if (descriptor === undefined || (descriptor & 0x08) !== 0) throw new Error('原生会话压缩帧头无效')
+  const singleSegment = (descriptor & 0x20) !== 0
+  const windowDescriptorBytes = singleSegment ? 0 : 1
+  const dictionaryIdBytes = [0, 1, 2, 4][descriptor & 3]!
+  const contentSizeBytes = [singleSegment ? 1 : 0, 2, 4, 8][descriptor >>> 6]!
+  let cursor = start + 5 + windowDescriptorBytes + dictionaryIdBytes + contentSizeBytes
+  for (;;) {
+    if (cursor + 3 > bytes.length) throw new Error('原生会话压缩块头不完整')
+    const block = bytes.readUIntLE(cursor, 3)
+    const blockType = (block >>> 1) & 3
+    if (blockType === 3) throw new Error('原生会话压缩块类型无效')
+    const lastBlock = (block & 1) !== 0
+    const payloadBytes = blockType === 1 ? 1 : block >>> 3
+    cursor += 3 + payloadBytes
+    if (lastBlock && (descriptor & 0x04) !== 0) cursor += 4
+    if (cursor > bytes.length) throw new Error('原生会话压缩帧不完整')
+    if (lastBlock) return cursor
+  }
+}
+
 export function decodeNativeSession(bytes: Uint8Array, maxBytes = MAX_DECODED_BYTES): Uint8Array {
+  const input = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   const chunks: Buffer[] = []
   let offset = 0
   let total = 0
-  while (offset < bytes.length) {
+  while (offset < input.length) {
     if (chunks.length >= MAX_FRAMES) throw new Error('原生会话压缩帧超过上限')
-    if (bytes[offset] !== 0x28 || bytes[offset + 1] !== 0xb5 || bytes[offset + 2] !== 0x2f || bytes[offset + 3] !== 0xfd) throw new Error('原生会话包含非标准压缩帧')
-    const decoded: unknown = zstdDecompressSync(bytes.subarray(offset), { info: true, maxOutputLength: Math.max(1, maxBytes - total) })
+    const end = standardFrameEnd(input, offset)
+    const frame = input.subarray(offset, end)
+    const decoded: unknown = zstdDecompressSync(frame, { info: true, maxOutputLength: Math.max(1, maxBytes - total) })
     if (typeof decoded !== 'object' || decoded === null || !('buffer' in decoded) || !Buffer.isBuffer(decoded.buffer)
       || !('engine' in decoded) || typeof decoded.engine !== 'object' || decoded.engine === null
-      || !('bytesWritten' in decoded.engine) || typeof decoded.engine.bytesWritten !== 'number'
-      || decoded.engine.bytesWritten <= 0 || decoded.engine.bytesWritten > bytes.length - offset) {
+      || !('bytesWritten' in decoded.engine) || decoded.engine.bytesWritten !== frame.length) {
       throw new Error('原生会话压缩帧无效')
     }
     total += decoded.buffer.length
     if (total > maxBytes) throw new Error('原生会话解压后超过大小上限')
     chunks.push(decoded.buffer)
-    offset += decoded.engine.bytesWritten
+    offset = end
   }
   if (offset === 0) throw new Error('原生会话为空')
   return Buffer.concat(chunks, total)

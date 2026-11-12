@@ -38,7 +38,7 @@ npm run pack:tarball  # 自动构建并检查，生成可安装 tarball
 
 ```sh
 node scripts/mock-crowdtest.mjs 8790
-DSH_HOME=/tmp/dsh-ct-home "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile web add "file:$PWD/dsh-crowdtest-0.2.11.tgz"
+DSH_HOME=/tmp/dsh-ct-home "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile web add "file:$PWD/dsh-crowdtest-0.2.13.tgz"
 DSH_HOME=/tmp/dsh-ct-home "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" --profile web --port 8791
 # 在 Web 界面分别领取两个独立任务：
 # /crowdtest ABCD-EFGH http://127.0.0.1:8790
@@ -53,9 +53,13 @@ DSH_HOME=/tmp/dsh-ct-home "/Applications/DeepSeek Harness.app/Contents/Resources
 
 ## 发布到 GitHub Releases
 
-为通过检查的提交添加与 `package.json` 对应的版本标签（如 `v0.2.11`）并推送，或在 GitHub 发布该标签的 Release。发布工作流运行类型检查、测试、源码检查和 `npm pack`，将两份同内容的安装包上传到该标签的 GitHub Release。仓库访问权限决定谁可以下载。包声明 `private: true`，防止意外发布到 npm。
+在 GitHub Actions 打开「Release plugin」，点击「Run workflow」并选择 `main`。检查通过后，工作流按 `package.json` 的版本创建 Release，并上传安装包。已有同名标签时，只能从该标签对应的提交重新发布。
+
+为通过检查的提交添加与 `package.json` 对应的版本标签（如 `v0.2.13`）并推送，或在 GitHub 发布该标签的 Release。发布工作流运行类型检查、测试、源码检查和 `npm pack`，将两份同内容的安装包上传到该标签的 GitHub Release。仓库访问权限决定谁可以下载。包声明 `private: true`，防止意外发布到 npm。
 
 安装包仅包含 `package.json`、`README.md`、`cordis.patch.yml`、`icon.png`、`lib/index.js` 和 `lib/client.js`。源码及安装包检查会拒绝具体的私有网关域名和常见凭据格式。
+
+0.2.13 逐帧校验原生会话备份。遇到可跳过帧或不完整的帧时，插件会停止上传。
 
 0.2.11 需要平台生成带地址的完整领取命令，或在插件配置中指定平台地址。历史运行可在原工作区续领。若旧绑定共用凭证或模型路由，各运行需分别重新领取。绑定冲突期间，模型请求和备份均暂停。若多个已存在会话共用工作区，请在平台重新创建本机运行。若多个运行记录占用同一会话标识，请联系管理员核对归属。
 

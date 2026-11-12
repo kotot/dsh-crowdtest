@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { zstdCompressSync } from 'node:zlib'
+import { constants, zstdCompressSync } from 'node:zlib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { captureNativeSession, decodeNativeSession, NATIVE_SESSION_NAME, resolveNativeSessionRoot } from '../src/native-session.ts'
 
@@ -66,6 +66,30 @@ describe('native persistence snapshot', () => {
     const bytes = zstdCompressSync(Buffer.from('x'.repeat(50)))
     expect(() => decodeNativeSession(Buffer.concat([bytes, bytes]), 99)).toThrow()
     expect(decodeNativeSession(Buffer.concat([bytes, bytes]), 100)).toHaveLength(100)
+  })
+  it('decodes raw and RLE blocks followed by a checksummed compressed frame', () => {
+    const rawAndRle = Buffer.from([
+      0x28, 0xb5, 0x2f, 0xfd,
+      0x03, 0, 0, 0, 0, 0, // Window descriptor, four-byte dictionary ID of zero, unknown content size.
+      0x10, 0, 0, 0x61, 0x62, // Non-final raw block containing "ab".
+      0x23, 0, 0, 0x63, // Final RLE block containing four copies of "c".
+    ])
+    const content = Buffer.from('xy'.repeat(70_000))
+    const checksummed = zstdCompressSync(content, { params: { [constants.ZSTD_c_checksumFlag]: 1 } })
+    expect(Buffer.from(decodeNativeSession(Buffer.concat([rawAndRle, checksummed]))).equals(
+      Buffer.concat([Buffer.from('abcccc'), content]),
+    )).toBe(true)
+    expect(() => decodeNativeSession(checksummed.subarray(0, -1))).toThrow()
+  })
+  it.each([
+    ['missing descriptor', []],
+    ['truncated eight-byte content size', [0xe0, 0, 0, 0]],
+    ['reserved descriptor bit', [0x28, 0, 1, 0, 0]],
+    ['reserved block type', [0x20, 0, 7, 0, 0]],
+    ['missing RLE payload', [0x20, 4, 0x23, 0, 0]],
+  ] as const)('rejects a frame with %s', (_, body) => {
+    const bytes = Uint8Array.from([0x28, 0xb5, 0x2f, 0xfd, ...body])
+    expect(() => decodeNativeSession(bytes)).toThrow()
   })
 })
 
