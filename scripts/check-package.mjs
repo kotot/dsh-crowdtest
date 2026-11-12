@@ -2,6 +2,8 @@ import { execFileSync } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import minVersion from 'semver/ranges/min-version.js'
+import lt from 'semver/functions/lt.js'
 
 export const PUBLICATION_PATHS = [
   'README.md',
@@ -10,6 +12,7 @@ export const PUBLICATION_PATHS = [
   'lib/client.js',
   'lib/index.js',
   'package.json',
+  'usage-guide.png',
 ]
 
 const RESTRICTED_CONTENT = [
@@ -45,7 +48,7 @@ export function publicationPathsFromReport(output, manifest) {
 
 const SOURCE_FILES = new Set([
   '.gitignore', '.npmrc', '.github/workflows/release.yml', 'README.md', 'build.mjs', 'cordis.patch.yml',
-  'docs/DEVELOPMENT.md', 'icon.png', 'package.json', 'package-lock.json', 'pnpm-lock.yaml', 'tsconfig.json',
+  'docs/DEVELOPMENT.md', 'icon.png', 'usage-guide.png', 'package.json', 'package-lock.json', 'pnpm-lock.yaml', 'tsconfig.json', 'vitest.config.ts',
   'scripts/check-package.mjs', 'scripts/mock-crowdtest.mjs',
 ])
 
@@ -55,7 +58,7 @@ export async function checkSource(directory = process.cwd()) {
     if (!SOURCE_FILES.has(name) && !/^(?:src\/(?:client\/)?|tests\/)[a-z][a-z0-9.-]*\.(?:ts|tsx|jsx|mjs)$/.test(name)) {
       throw new Error(`Unexpected source file: ${name}`)
     }
-    if (name === 'icon.png') continue
+    if (name === 'icon.png' || name === 'usage-guide.png') continue
     const kinds = scanRestrictedContent(await readFile(resolve(directory, name), 'utf8'))
     if (kinds.length) throw new Error(`Source rejected: ${name} contains a possible ${kinds.join(', ')}.`)
   }
@@ -65,6 +68,12 @@ export async function checkSource(directory = process.cwd()) {
 export async function checkPackage(directory = process.cwd()) {
   const manifest = JSON.parse(await readFile(resolve(directory, 'package.json'), 'utf8'))
   verifyPublicationPaths(['package.json', ...manifest.files])
+  const minimum = typeof manifest.engines?.dsh === 'string' ? minVersion(manifest.engines.dsh) : null
+  if (!minimum || lt(minimum, '0.2.2-rc.1')) throw new Error('Package must require the DSH updater APIs in 0.2.2-rc.1.')
+  if (manifest.main !== 'lib/index.js' || manifest.exports?.['.'] !== './lib/index.js' ||
+      manifest.exports?.['./client'] !== './lib/client.js' || manifest.dsh?.bundle?.patch !== './cordis.patch.yml') {
+    throw new Error('Package must declare the CrowdTest host, client and bundle patch entry points.')
+  }
   if (manifest.icon !== './icon.png') throw new Error('Package icon must refer to ./icon.png.')
   const entryPoints = [manifest.main, ...Object.values(manifest.exports), manifest.dsh?.bundle?.patch]
   if (entryPoints.some(path => typeof path !== 'string' || !PUBLICATION_PATHS.includes(path.replace(/^\.\//, '')))) {
@@ -83,9 +92,11 @@ export async function checkPackage(directory = process.cwd()) {
   verifyPublicationPaths(paths)
   for (const path of paths) {
     const content = await readFile(resolve(directory, path))
-    if (path === 'icon.png') {
-      if (content.length > 256 * 1024 || !content.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
-        throw new Error('Publication rejected: icon.png must be a PNG no larger than 256 KiB.')
+    if (path === 'icon.png' || path === 'usage-guide.png') {
+      const maxBytes = path === 'icon.png' ? 256 * 1024 : 5 * 1024 * 1024
+      const limit = path === 'icon.png' ? '256 KiB' : '5 MiB'
+      if (content.length > maxBytes || !content.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
+        throw new Error(`Publication rejected: ${path} must be a PNG no larger than ${limit}.`)
       }
       continue
     }

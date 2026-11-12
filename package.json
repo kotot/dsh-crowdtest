@@ -1,6 +1,6 @@
 {
   "name": "dsh-crowdtest",
-  "version": "0.2.14",
+  "version": "0.2.15",
   "private": true,
   "repository": {
     "type": "git",
@@ -23,15 +23,18 @@
     "lib/client.js",
     "cordis.patch.yml",
     "icon.png",
-    "README.md"
+    "README.md",
+    "usage-guide.png"
   ],
   "engines": {
-    "dsh": ">=0.2.1-rc.1 <1.0.0"
+    "dsh": ">=0.2.2-rc.1 <1.0.0"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-session": "*",
     "@deepseek-ai/cordis": "*",
-    "@deepseek-ai/dsh-typert-protocol": "*"
+    "@deepseek-ai/dsh-session": "*",
+    "@deepseek-ai/dsh-typert-protocol": "*",
+    "@deepseek-ai/dsh-app-boot": "*",
+    "@deepseek-ai/dsh-atomic-write": "*"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-session": {
@@ -41,6 +44,12 @@
       "optional": true
     },
     "@deepseek-ai/dsh-typert-protocol": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-app-boot": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-atomic-write": {
       "optional": true
     }
   },
@@ -54,7 +63,8 @@
         "@deepseek-ai/dsh-client-ui-plugin-manager",
         "@deepseek-ai/dsh-api-remotes",
         "@deepseek-ai/dsh-client-ui-conversation",
-        "@deepseek-ai/dsh-client-ui-renderer"
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-primitives"
       ]
     }
   },
@@ -70,11 +80,14 @@
   "devDependencies": {
     "@types/node": "22.20.4",
     "@types/react": "18.3.5",
+    "@types/semver": "7.7.1",
     "esbuild": "0.28.2",
-    "typescript": "6.0.3",
-    "vitest": "4.1.11",
+    "happy-dom": "20.11.6",
     "react": "18.3.1",
     "react-dom": "18.3.1",
-    "happy-dom": "20.11.6"
+    "semver": "7.8.5",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11",
+    "zod": "4.4.3"
   }
 }

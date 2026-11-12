@@ -12,7 +12,13 @@ CrowdTest 众测插件：参与者在 DeepSeek Harness 桌面端领取众测任�
 
 ## 更新插件
 
-GitHub Release 同时提供带版本号的安装包和同内容的 `dsh-crowdtest.tgz`。先同步任务会话，再下载新版，在 DSH 插件页卸载旧版、添加新安装包并启用。本地 tarball 安装不支持 DSH 原生「版本」更新入口。
+0.2.15 需要 DSH 0.2.2-rc.1 或更新的受支持版本。首次安装含更新功能的包后，插件所有者可在详情页点击「检查更新」，保存仅能读取 `kotot/dsh-crowdtest` 仓库 Contents 的 GitHub 令牌。保存后会立即检查，之后每次打开已启用的插件详情页都会检查一次。有新版时，标题旁显示「可更新」，点击右上角「更新到 x.y.z」即可安装。展开「GitHub 访问令牌」可以替换或移除保存在 DSH 凭据服务中的令牌。
+
+更新器读取 GitHub 最新正式 Release，核对版本标签、资产 ID、带版本号的文件名、大小和 SHA-256 摘要。安装前验证包内容、DSH 版本和操作系统，并将备份包与当前安装目录逐文件比对。若原包丢失，可从当前版本的 GitHub 标签获取备份。手动重装后若已删除下载文件，点击「检查更新」会通过该版本的标签和本机文件重新验证。详情页关闭后，已接受的更新仍会继续。安装完成后请完全退出并重新打开 DSH，加载新版本。
+
+更新期间请等操作结束后再卸载、切换启用状态或从其他窗口操作同一插件。更新器在调用 DSH 安装接口前会再次核对当前安装和启用状态。DSH 在接口内部获取安装锁，也允许其他客户端使用该接口，因此在最后一次核对与取得安装锁之间仍有竞争窗口。
+
+当前配置目录的 `.crowdtest-updater/receipt.json` 保存更新记录。每次更新保留的目标和原版本安装包可能仍被 DSH 的本地文件依赖引用。安装失败且原版本完好时可重新检查并重试。若安装器已经替换了包，更新器仅在确认目标由本次更新写入且启用状态仍一致时尝试还原。若需要手动恢复，核对当前安装后可按详情页提示添加 `previous-*.tgz` 并重启 DSH。运行绑定和任务工作区仍保存在各自的原有目录。
 
 ## 工作方式
 
@@ -22,7 +28,7 @@ GitHub Release 同时提供带版本号的安装包和同内容的 `dsh-crowdtes
 | 模型 | Token 存入 Harness 凭证存储。新运行的凭证引用、模型路由和工作区名称包含完整平台地址、项目、任务、运行与会话 ID 的组合摘要。模型配置只记录凭证引用。会话固定选择该路由与平台推理档位；`agent/request` 监听器拒绝该会话改用其他模型。 |
 | 会话 | 会话 ID 等于平台为该运行生成的 sessionId，会话日志中写入 `plugin:dsh-crowdtest/binding` 记录。绑定关系保存在 `$DSH_HOME/crowdtest/runs.json`。 |
 | 状态 | `GET /api/crowdtest/local-runs/session/status` 返回实际平台备份的 SHA-256、大小、格式和时间。可见会话默认每 5 秒检查一次；重新打开、窗口获得焦点或连接恢复时立即检查。只有本地确定性归档与当前服务端元数据一致时显示**已同步**。认证、网络或元数据异常显示**无法确认**，上传失败显示**同步失败**。历史上传摘要和同步确认时间不作为同步依据。 |
-| 上传 | `turn/end` 后防抖 3 秒，读取持久化日志，将原生 `<sessionId>/session.v4.jsonl.zstd` 的原文件名及压缩字节原样放入确定性的 tar.gz，按 `dsh-session-tree-tar-gzip` 格式走 `session/upload-url` → TOS → `session/verify`。归档中出现当前运行 Token 原文时拒绝上传；不检测其他凭据或 Token 的编码变体。 |
+| 上传 | `turn/end` 后防抖 3 秒，读取持久化日志，将原生 `<sessionId>/session.v4.jsonl.zstd` 的原文件名及压缩字节原样放入确定性的 tar.gz，按 `dsh-session-tree-tar-gzip` 格式走 `session/upload-url` → TOS → `session/verify`。发现当前运行的凭据时，插件拒绝上传。 |
 
 ## 开发
 
@@ -38,7 +44,7 @@ npm run pack:tarball  # 自动构建并检查，生成可安装 tarball
 
 ```sh
 node scripts/mock-crowdtest.mjs 8790
-DSH_HOME=/tmp/dsh-ct-home "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile web add "file:$PWD/dsh-crowdtest-0.2.13.tgz"
+DSH_HOME=/tmp/dsh-ct-home "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile web add "file:$PWD/dsh-crowdtest-0.2.15.tgz"
 DSH_HOME=/tmp/dsh-ct-home "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" --profile web --port 8791
 # 在 Web 界面分别领取两个独立任务：
 # /crowdtest ABCD-EFGH http://127.0.0.1:8790
@@ -49,15 +55,15 @@ DSH_HOME=/tmp/dsh-ct-home "/Applications/DeepSeek Harness.app/Contents/Resources
 
 0.2.3 需要服务端提供上述只读状态接口。旧服务端返回 404 时显示**无法确认**，不会跳过服务端确认而宣称同步成功。Host 对同一会话的检查与上传排序，重复手动点击合并；不同会话独立处理。上传中新增内容会保留**有新内容待同步**，新完成的一轮会触发后续同步。归档缓存按持久化事件修订失效。
 
-插件按结构化接口调用 Host 服务（见 `src/dsh.ts`），运行时通过可选 peer 复用 Harness 的 Cordis 与 Typert Protocol，避免装入第二份服务实例；`engines.dsh` 声明 `>=0.2.1-rc.1 <1.0.0`。DSH 升级改动这些接口时，需要按新版本核对 `src/dsh.ts`。
+插件按结构化接口调用 Host 服务（见 `src/dsh.ts`），运行时通过可选 peer 复用 Harness 的 Cordis、Typert Protocol、兼容性检查与原子文件操作。`engines.dsh` 声明 `>=0.2.2-rc.1 <1.0.0`。DSH 升级改动这些接口时，需要按新版本核对 `src/dsh.ts`。
 
 ## 发布到 GitHub Releases
 
 在 GitHub Actions 打开「Release plugin」，点击「Run workflow」并选择 `main`。检查通过后，工作流按 `package.json` 的版本创建 Release，并上传安装包。已有同名标签时，只能从该标签对应的提交重新发布。
 
-为通过检查的提交添加与 `package.json` 对应的版本标签（如 `v0.2.13`）并推送，或在 GitHub 发布该标签的 Release。发布工作流运行类型检查、测试、源码检查和 `npm pack`，将两份同内容的安装包上传到该标签的 GitHub Release。仓库访问权限决定谁可以下载。包声明 `private: true`，防止意外发布到 npm。
+为通过检查的提交添加与 `package.json` 对应的版本标签（如 `v0.2.15`）并推送，或在 GitHub 发布该标签的 Release。发布工作流运行类型检查、测试、源码检查和 `npm pack`，将两份同内容的安装包上传到该标签的 GitHub Release。仓库访问权限决定谁可以下载。包声明 `private: true`，防止意外发布到 npm。
 
-安装包仅包含 `package.json`、`README.md`、`cordis.patch.yml`、`icon.png`、`lib/index.js` 和 `lib/client.js`。源码及安装包检查会拒绝具体的私有网关域名和常见凭据格式。
+安装包仅包含 `package.json`、`README.md`、`cordis.patch.yml`、`icon.png`、`usage-guide.png`、`lib/index.js` 和 `lib/client.js`。源码及安装包检查会拒绝具体的私有网关域名和常见凭据格式。
 
 0.2.13 逐帧校验原生会话备份。遇到可跳过帧或不完整的帧时，插件会停止上传。
 
@@ -76,6 +82,5 @@ DSH_HOME=/tmp/dsh-ct-home "/Applications/DeepSeek Harness.app/Contents/Resources
 - Token 存在 Harness 凭证文件中，Agent 的 Bash 与之同属一个 OS 用户，仍可读取；模型请求由 Host 进程发出，Token 不进入工具进程环境变量。
 - DSH 的会话标题生成会用会话当前模型（即测试模型）额外发起请求，计入本次运行的模型调用。
 - 暂不安装项目 Skills，也不接入共享工具代理（vision / seedream / web-search）。
-- 插件页显示当前包版本，更新包在 GitHub Releases 提供。
 
 0.2.10 保留原生 `session.v4.jsonl.zstd` 的文件名与压缩字节进行会话备份。自定义 DSH 会话存储根目录时，插件配置 `nativeSessionRoot` 应与 DSH persistence 的 root 一致。先部署支持原生归档的 BFF，再升级插件。

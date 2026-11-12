@@ -17,7 +17,7 @@ async function fixture() {
   await mkdir(join(directory, 'lib'))
   await writeFile(join(directory, 'package.json'), JSON.stringify(manifest))
   for (const path of PUBLICATION_PATHS.filter(path => path !== 'package.json')) {
-    await writeFile(join(directory, path), path === 'icon.png' ? icon : 'clean publication fixture\n')
+    await writeFile(join(directory, path), path.endsWith('.png') ? icon : 'clean publication fixture\n')
   }
   return directory
 }
@@ -34,6 +34,15 @@ describe('npm publication boundary', () => {
     expect(publicationPathsFromReport(JSON.stringify([report]), manifest)).toEqual(PUBLICATION_PATHS)
     expect(publicationPathsFromReport(JSON.stringify({ [manifest.name]: report }), manifest)).toEqual(PUBLICATION_PATHS)
     expect(() => publicationPathsFromReport(JSON.stringify({ [manifest.name]: { ...report, version: '0.0.0' } }), manifest)).toThrow(/invalid package report/)
+  })
+
+  it('rejects a package that targets DSH versions lacking the updater APIs', async () => {
+    const directory = await fixture()
+    const path = join(directory, 'package.json')
+    const manifest = JSON.parse(await readFile(path, 'utf8'))
+    manifest.engines.dsh = '>=0.2.1-rc.1'
+    await writeFile(path, JSON.stringify(manifest))
+    await expect(checkPackage(directory)).rejects.toThrow('DSH updater APIs')
   })
 
   it('checks the actual clean npm pack file list without invoking lifecycle scripts', async () => {

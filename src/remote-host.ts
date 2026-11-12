@@ -1,4 +1,4 @@
-import { descriptors, parseRequest, type SyncRequest } from './bridge.ts'
+import { contribution, parseRequest, type SyncRequest } from './bridge.ts'
 import type { SessionBackups } from './session-backups.ts'
 import type { DshContext } from './dsh.ts'
 
@@ -25,5 +25,7 @@ export async function installRemote(ctx: DshContext, backups: SessionBackups): P
     }
   }
   new CrowdtestSync()
-  ctx.typert?.register({ package: 'dsh-crowdtest', face: 'host', schemas: [], model: { services: [], events: [], objects: [] }, invocations: descriptors })
+  const { installUpdateService } = await import('./update-remote.ts')
+  await installUpdateService(ctx)
+  ctx.typert?.register({ package: 'dsh-crowdtest', face: 'host', schemas: [], model: { services: [], events: [], objects: [] }, invocations: contribution.descriptors })
 }

@@ -7,7 +7,7 @@ import { readFile } from 'node:fs/promises'
 import { build } from 'esbuild'
 
 const manifest = JSON.parse(await readFile(new URL('./package.json', import.meta.url), 'utf8'))
-const PLATFORM_MODULES = ['react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/cordis']
+const PLATFORM_MODULES = ['react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/cordis', '@deepseek-ai/dsh-client-ui-primitives']
 const releaseVersion = {
   name: 'release-version',
   setup(builder) {

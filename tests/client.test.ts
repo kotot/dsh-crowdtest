@@ -14,6 +14,7 @@ it('mounts before declaring the dynamic namespace dependency and uses its inject
     return {
       remote: {
         $mount: mount,
+        get crowdtestUpdate(): Context['remote']['crowdtestUpdate'] { throw new Error('detail panel was not opened') },
         get crowdtestSync() {
           if (!scoped) throw new Error('cannot get property remote.crowdtestSync without inject')
           scopedCalls++
@@ -30,7 +31,7 @@ it('mounts before declaring the dynamic namespace dependency and uses its inject
           return () => {}
         },
       },
-      inject(services, callback) { expect(mounted).toBe(true); expect(services).toEqual(['remote.crowdtestSync']); callback(context(true)) },
+      inject(services, callback) { expect(mounted).toBe(true); expect([['remote.crowdtestSync'], ['remote.crowdtestUpdate']]).toContainEqual(services); callback(context(true)) },
       on: () => () => {},
       effect(execute) { disposals.push(execute()) },
     }

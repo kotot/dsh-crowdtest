@@ -31,6 +31,8 @@ export const name = 'crowdtest'
 
 export const inject = [
   'typert',
+  'pluginManager',
+  'profileContext',
   'commands',
   'credentials',
   'settings',

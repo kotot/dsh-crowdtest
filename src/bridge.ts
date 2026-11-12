@@ -1,3 +1,5 @@
+import { updateDescriptors } from './update-protocol.ts'
+
 export type SyncPhase = 'checking' | 'synced' | 'dirty' | 'uploading' | 'failed' | 'unknown'
 export interface SyncView {
   readonly sessionId: string
@@ -44,4 +46,4 @@ export const descriptors = (['inspect', 'sync'] as const).map(method => ({
   cancellation: { parameter: 'signal' },
   result: { mode: 'strict' as const, typeSymbol: 'SyncView', create: () => ({ parse: parseView }), decode: parseView },
 }))
-export const contribution = { package: 'dsh-crowdtest', descriptors }
+export const contribution = { package: 'dsh-crowdtest', descriptors: [...descriptors, ...updateDescriptors] }

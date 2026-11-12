@@ -6,6 +6,8 @@
  * lists only the members used here, matching the shipped 0.2.x Host signatures.
  */
 
+import type { NativeManager, UpdateCredentials } from './update-install.ts'
+
 export type Disposer = () => void
 
 /** A durable Session event as persisted by DSH (`SessionEvent`). */
@@ -61,6 +63,8 @@ export interface DshCommands {
 }
 
 export interface DshCredentials {
+  describe?: UpdateCredentials['describe']
+  unset?: UpdateCredentials['unset']
   set(ref: string, value: string): Promise<void>
   resolve(ref: string): Promise<{ value: string; source: string } | undefined>
 }
@@ -119,6 +123,8 @@ export interface DshLogger {
 
 /** The Cordis Context members the plugin uses. */
 export interface DshContext {
+  readonly pluginManager?: NativeManager
+  readonly profileContext?: { dir: string }
   readonly typert?: { register(contribution: unknown): unknown }
   readonly commands: DshCommands
   readonly credentials: DshCredentials
