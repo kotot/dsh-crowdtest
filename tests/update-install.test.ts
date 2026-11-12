@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs'
 import { chmod, mkdtemp, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -70,9 +71,11 @@ async function fixture(target = next, compatible: UpdatePlatform['compatible'] =
   return { updater, profile, platform, create, checked, transport, bundle, deploy, directory, previousPath, install }
 }
 async function settled(updater: PluginUpdater): Promise<UpdateView> {
-  let view = await updater.inspect()
-  await vi.waitFor(async () => { view = await updater.inspect(); expect(view.status.kind).not.toBe('busy') })
-  return view
+  return vi.waitFor(async () => {
+    const view = await updater.inspect()
+    expect(view.status.kind).not.toBe('busy')
+    return view
+  })
 }
 it('checks public releases without a credential service and keeps journals private', async () => {
   const { updater, profile, transport, platform } = await fixture()
@@ -192,6 +195,112 @@ it('reports recovery-needed when restoration fails, or an unrelated installation
     }
   }
 })
+it.each(['recovery-needed', 'restart-required'] as const)('returns %s in the same inspect response when the install finishes during bundle lookup', async outcome => {
+  const { updater, checked, install, bundle, profile, platform, transport } = await fixture()
+  const id = await checked()
+  if (outcome === 'recovery-needed') {
+    const apply = install.getMockImplementation()!
+    install.mockImplementationOnce(async (...args) => { await apply(...args); return { application: 'failed' } })
+      .mockRejectedValueOnce(Error(secret))
+  }
+  const resumeInstall = Promise.withResolvers<void>()
+  const metadata = transport.getMockImplementation()!
+  transport.mockImplementationOnce(async (...args) => { await resumeInstall.promise; return metadata(...args) })
+  const lock = platform.atomic.withFileLock
+  const unlocked = Promise.withResolvers<void>()
+  platform.atomic.withFileLock = async (...args) => {
+    try { return await lock(...args) } finally { unlocked.resolve() }
+  }
+  await updater.start(id)
+  vi.spyOn(platform.manager, 'listBundles').mockImplementationOnce(async () => {
+    const snapshot = { ...bundle }
+    resumeInstall.resolve()
+    await unlocked.promise
+    return [snapshot]
+  })
+  const view = await dispatchUpdate(undefined, 'inspect', {}, async () => updater)
+  const { jobId } = JSON.parse(await readFile(join(profile, '.crowdtest-updater', 'receipt.json'), 'utf8'))
+  expect(view).toEqual({
+    runningVersion: previous.asset.version, installedVersion: next.asset.version, latestVersion: next.asset.version,
+    status: outcome === 'recovery-needed' ? { kind: outcome, jobId } : { kind: outcome },
+  })
+  expect(install).toHaveBeenCalledTimes(outcome === 'recovery-needed' ? 2 : 1)
+})
+
+it('bounds retries when the receipt keeps changing during proof verification and recovers on the next inspect', async () => {
+  const compatible = vi.fn(() => true)
+  const { updater, checked, profile } = await fixture(next, compatible)
+  await updater.start(await checked())
+  expect((await settled(updater)).status.kind).toBe('restart-required')
+  const path = join(profile, '.crowdtest-updater', 'receipt.json')
+  const installed = JSON.parse(await readFile(path, 'utf8'))
+  let changes = 0
+  compatible.mockImplementation(() => {
+    const kind = ++changes % 2 ? 'recovery-needed' : 'installed'
+    writeFileSync(path, JSON.stringify({ ...installed, kind }))
+    return true
+  })
+  await expect(updater.inspect()).rejects.toMatchObject({ code: 'state' })
+  expect(changes).toBe(3)
+  compatible.mockImplementation(() => true)
+  expect((await updater.inspect()).status).toEqual({ kind: 'recovery-needed', jobId: installed.jobId })
+})
+
+it.each(['preflight', 'lock contention'])('keeps polling available when a second window encounters three install phase changes during %s', async stage => {
+  const { updater, checked, create, platform, bundle, install, transport } = await fixture()
+  const request = { candidateId: await checked() }
+  const secondWindow = create()
+  const checking = Promise.withResolvers<void>()
+  const metadata = transport.getMockImplementation()!
+  transport.mockImplementationOnce(async (...args) => { await checking.promise; return metadata(...args) })
+  const gates = ['downloading', 'validating', 'backup'].map(phase => ({
+    phase, entered: Promise.withResolvers<void>(), resume: Promise.withResolvers<void>(),
+  }))
+  const write = platform.atomic.writeFileAtomic
+  platform.atomic.writeFileAtomic = async (file, body, options) => {
+    await write(file, body, options)
+    const phase = JSON.parse(body).phase
+    const gate = gates.find(gate => gate.phase === phase)
+    if (gate) { gate.entered.resolve(); await gate.resume.promise }
+  }
+  const startInSecondWindow = () => dispatchUpdate(undefined, 'start', request, async () => secondWindow)
+  const contend = Promise.withResolvers<void>()
+  let pending: Promise<UpdateView> | undefined
+  if (stage === 'lock contention') {
+    const lock = platform.atomic.withFileLock
+    const requested = Promise.withResolvers<void>()
+    platform.atomic.withFileLock = async (file, action) => {
+      platform.atomic.withFileLock = lock
+      requested.resolve()
+      await contend.promise
+      return lock(file, action, { waitMs: 0 })
+    }
+    pending = startInSecondWindow()
+    await requested.promise
+  }
+  try {
+    const first = await dispatchUpdate(undefined, 'start', request, async () => updater)
+    expect(first.status).toEqual({ kind: 'busy', phase: 'checking' })
+    const list = vi.spyOn(platform.manager, 'listBundles')
+    let resume = checking.resolve
+    for (const gate of gates) {
+      const advance = resume
+      list.mockImplementationOnce(async () => { advance(); await gate.entered.promise; return [bundle] })
+      resume = gate.resume.resolve
+    }
+    contend.resolve()
+    await expect(pending ?? startInSecondWindow()).rejects.toThrow('CrowdTest 更新服务暂时不可用')
+    const nextPoll = await dispatchUpdate(undefined, 'inspect', {}, async () => secondWindow)
+    expect(nextPoll.status).toEqual({ kind: 'busy', phase: 'backup' })
+  } finally {
+    contend.resolve()
+    checking.resolve()
+    for (const gate of gates) gate.resume.resolve()
+    expect((await settled(updater)).status.kind).toBe('restart-required')
+  }
+  expect(install).toHaveBeenCalledTimes(1)
+})
+
 it('refuses corrupted durable state without invoking the native installer', async () => {
   const { updater, profile, checked, install } = await fixture()
   const id = await checked()
@@ -361,15 +470,18 @@ it('accepts a checked candidate while another window is waiting for GitHub metad
   const candidateId = await checked()
   const entered = Promise.withResolvers<void>()
   const release = Promise.withResolvers<void>()
+  const resumeInstall = Promise.withResolvers<void>()
   transport.mockImplementationOnce(async () => { entered.resolve(); await release.promise; return Response.json(next.release) })
+    .mockImplementationOnce(async () => { await resumeInstall.promise; return Response.json(next.release) })
   const checking = updater.check()
   await entered.promise
   try {
     const other = create()
     const view = await dispatchUpdate(undefined, 'start', { candidateId }, async () => other)
     expect(view.status.kind).toBe('busy')
+    resumeInstall.resolve()
     expect((await settled(other)).status.kind).toBe('restart-required')
-  } finally { release.resolve(); await checking }
+  } finally { resumeInstall.resolve(); release.resolve(); await checking }
   expect((await updater.inspect()).status.kind).toBe('restart-required')
   expect(install).toHaveBeenCalledTimes(1)
 })

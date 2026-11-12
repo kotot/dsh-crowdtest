@@ -67,6 +67,9 @@ const isPackageFile = (source: string) => source.startsWith('file:') && isAbsolu
 function pidAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true } catch (error) { return !(error instanceof Error && 'code' in error && error.code === 'ESRCH') }
 }
+class UnstableObservation extends UpdateError {
+  constructor() { super('state') }
+}
 export class PluginUpdater {
   private readonly directory: string
   private readonly file: string
@@ -187,12 +190,17 @@ export class PluginUpdater {
     return gt(record.asset.version, installed.version) ? { kind: 'available', candidateId: record.candidateId } : { kind: 'current' }
   }
   async inspect(): Promise<UpdateView> {
-    const [record, bundle] = await Promise.all([this.read(), this.bundle()])
-    return {
-      runningVersion: this.platform.running, installedVersion: bundle?.version && valid(bundle.version) ? bundle.version : null,
-      latestVersion: record ? record.kind === 'failed' ? record.latest : record.asset.version : null,
-      status: await this.status(record, bundle),
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const record = await this.read()
+      const bundle = await this.bundle()
+      const view = {
+        runningVersion: this.platform.running, installedVersion: bundle?.version && valid(bundle.version) ? bundle.version : null,
+        latestVersion: record ? record.kind === 'failed' ? record.latest : record.asset.version : null,
+        status: await this.status(record, bundle),
+      }
+      if (JSON.stringify(await this.read()) === JSON.stringify(record)) return view
     }
+    throw new UnstableObservation()
   }
   private blocked(status: UpdateStatus) {
     return status.kind === 'busy' || status.kind === 'restart-required' || status.kind === 'recovery-needed'
@@ -254,7 +262,9 @@ export class PluginUpdater {
       try {
         const current = await this.inspect()
         if (current.status.kind === 'busy') { accepted.resolve(); return }
-      } catch {}
+      } catch (observationError) {
+        if (observationError instanceof UnstableObservation) return accepted.reject(observationError)
+      }
       accepted.reject(error instanceof UpdateError ? error : new UpdateError('state'))
     })
     await accepted.promise
@@ -348,6 +358,7 @@ export async function dispatchUpdate(principal: unknown, method: UpdateMethod, i
         case 'start': await updater.start(validated(requests.start, request).candidateId); break
       }
     } catch (error) {
+      if (error instanceof UnstableObservation) throw error
       const view = await updater.inspect()
       const code = errorCode(error, 'state')
       return { ...view, actionError: code, status: { kind: 'failed', code } }
