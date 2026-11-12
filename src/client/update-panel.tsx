@@ -1,4 +1,4 @@
-import React, { useRef, useSyncExternalStore } from 'react'
+import React, { useSyncExternalStore } from 'react'
 import { Button, IconRefreshOutlineRegular, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
 import { PACKAGE, updateErrors, type Phase, type UpdateView } from '../update-protocol.ts'
 import { canCheck, type UpdateSource } from './update-source.ts'
@@ -27,7 +27,7 @@ function statusText(view: UpdateView): string {
 type SourceProps = { source: UpdateSource }
 function Badge({ source }: SourceProps) {
   const { view, offline, actionError } = useSyncExternalStore(source.subscribe, source.getSnapshot)
-  return !offline && !actionError && view?.configured && view.status.kind === 'available' ? <Tag tone="info">可更新</Tag> : null
+  return !offline && !actionError && view?.status.kind === 'available' ? <Tag tone="info">可更新</Tag> : null
 }
 function Actions({ source }: SourceProps) {
   const { view, pending, offline, actionError } = useSyncExternalStore(source.subscribe, source.getSnapshot)
@@ -36,43 +36,21 @@ function Actions({ source }: SourceProps) {
   if (offline) return <Button variant="outline" size="sm" icon={icon} disabled={!!pending} onClick={source.reconnect}>重新连接</Button>
   if (pending === 'start' || view?.status.kind === 'busy') return <Button variant="primary" size="sm" icon={icon} disabled>正在更新…</Button>
   if (!view || !canCheck(view)) return null
-  const candidate = !actionError && view.configured && view.status.kind === 'available' ? view.status.candidateId : undefined
+  const candidate = !actionError && view.status.kind === 'available' ? view.status.candidateId : undefined
   if (candidate && view.latestVersion) return <Button variant="primary" size="sm" icon={icon} disabled={!!pending}
     onClick={() => { void source.start(candidate) }}>更新到 {view.latestVersion}</Button>
-  return <Button variant="outline" size="sm" icon={icon} disabled={!!pending} onClick={() => {
-    if (view.configured) void source.check()
-    else source.openSetup(true)
-  }}>{pending === 'check' ? '正在检查…' : '检查更新'}</Button>
+  return <Button variant="outline" size="sm" icon={icon} disabled={!!pending} onClick={() => { void source.check() }}>
+    {pending === 'check' ? '正在检查…' : '检查更新'}
+  </Button>
 }
 function Section({ source }: SourceProps) {
-  const { view, offline, pending, setupOpen, actionError } = useSyncExternalStore(source.subscribe, source.getSnapshot)
-  const secret = useRef<HTMLInputElement>(null)
+  const { view, offline, actionError } = useSyncExternalStore(source.subscribe, source.getSnapshot)
   const message = actionError ? updateErrors[actionError] : offline ? '正在重新连接更新服务…' : view && statusText(view)
   return <section aria-label="CrowdTest 插件更新" data-crowdtest-update>
     {message && <p role="status" aria-live="polite">{message}</p>}
-    {view && (setupOpen || view.configured) && <details open={setupOpen} onToggle={event => {
-      const open = event.currentTarget.open
-      if (open !== source.getSnapshot().setupOpen) source.openSetup(open)
-    }}>
-      <summary>GitHub 访问令牌{view.configured ? '（已配置）' : ''}</summary>
-      {setupOpen && <form onSubmit={event => {
-        event.preventDefault()
-        const token = secret.current?.value.trim()
-        if (!token || !secret.current || pending) return
-        secret.current.value = ''
-        void source.save(token)
-      }}>
-        <p><label htmlFor="crowdtest-update-token">请为 kotot/dsh-crowdtest 配置 Contents 只读权限。</label>{' '}
-          <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">创建 GitHub 令牌</a></p>
-        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
-          <input ref={secret} id="crowdtest-update-token" type="password" autoFocus autoComplete="new-password" maxLength={512} aria-label="GitHub 访问令牌" />
-          <Button type="submit" variant="primary" size="sm" disabled={!!pending}>保存令牌</Button>
-          {view.configured && <Button type="button" variant="outline" size="sm" disabled={!!pending} onClick={() => { void source.remove() }}>移除令牌</Button>}
-        </div>
-      </form>}
-    </details>}
   </section>
 }
+
 export function updateDetailSlots(source: UpdateSource) {
   const eligible = (Component: React.ComponentType<SourceProps>, showDisabled = false) => ({ subject }: DetailProps) => {
     if (subject.kind !== 'bundle' || subject.pkg?.name !== PACKAGE) return null

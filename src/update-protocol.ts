@@ -4,8 +4,9 @@ export const PACKAGE = 'dsh-crowdtest'
 export const versionText = z.string().check(z.maxLength(128), z.regex(/^[0-9A-Za-z.+-]+$/))
 export const digest = z.string().check(z.regex(/^[a-f0-9]{64}$/))
 export const updateErrors = {
-  credential: '请配置可读取此私有仓库内容的 GitHub 令牌，然后重新检查。',
-  access: 'GitHub 拒绝访问。请检查令牌的仓库、Contents 读取权限和请求限额。',
+  recheck: '请重新检查公开发布的版本。',
+  access: '无法访问 GitHub 公开发布，请检查仓库是否可用或稍后重试。',
+  rate: 'GitHub 请求次数已达限额，请稍后重试。',
   network: '连接 GitHub 失败，请稍后重试。',
   release: 'GitHub 发布信息或安装包标识无效。',
   changed: '发布内容或本机安装已变化，请重新检查更新。',
@@ -16,9 +17,6 @@ export const updateErrors = {
   unsupported: '此安装不由当前配置管理，或来自开发目录。',
   interrupted: '上一次更新中断，请核对插件页的安装版本。',
   state: '无法读取或保存更新记录。',
-  credentialSaveUnconfirmed: '未能确认 GitHub 凭据是否已保存，请重试。',
-  credentialRemovalUnconfirmed: '未能确认 GitHub 凭据是否已移除，请重试。',
-  credentialStore: '无法保存或移除 GitHub 凭据，请重试。',
 } as const
 export type UpdateErrorCode = keyof typeof updateErrors
 const errorCode = z.enum(Object.keys(updateErrors) as [UpdateErrorCode, ...UpdateErrorCode[]])
@@ -41,7 +39,7 @@ const status = z.discriminatedUnion('kind', [
 ])
 const view = z.strictObject({
   runningVersion: versionText, installedVersion: z.nullable(versionText), latestVersion: z.nullable(versionText),
-  configured: z.boolean(), status, actionError: z.optional(errorCode),
+  status, actionError: z.optional(errorCode),
 })
 export type UpdateView = z.infer<typeof view>
 export type UpdateStatus = UpdateView['status']
@@ -50,8 +48,6 @@ export const requests = {
   inspect: z.strictObject({}),
   check: z.strictObject({}),
   start: z.strictObject({ candidateId: z.uuid() }),
-  saveCredential: z.strictObject({ token: z.string().check(z.regex(/^[A-Za-z0-9_.-]{1,512}$/)) }),
-  removeCredential: z.strictObject({}),
 }
 export type UpdateMethod = keyof typeof requests
 export type UpdateRemote = {

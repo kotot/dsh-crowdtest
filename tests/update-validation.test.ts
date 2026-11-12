@@ -8,55 +8,59 @@ import { payload, tar } from './update-fixture.ts'
 const next = payload('0.2.16')
 const secret = 'unit-test-secret'
 const ok = () => true
-it('requires an owner before resolving any service, including for credential and malformed calls', async () => {
+it('requires an owner before resolving any service, including malformed calls', async () => {
   const get = vi.fn()
   for (const method of Object.keys(requests) as (keyof typeof requests)[]) {
     await expect(dispatchUpdate({ kind: 'user', grants: ['*'] }, method, { token: secret }, get)).rejects.toThrow('仅限所有者')
   }
-  for (const field of ['version', 'path', 'url', 'repo', 'credentialRef']) {
-    for (const method of ['inspect', 'check', 'start', 'removeCredential', 'saveCredential'] as const) {
+  for (const field of ['version', 'path', 'url', 'repo', 'credentialRef', 'token']) {
+    for (const method of ['inspect', 'check', 'start'] as const) {
       const request = { [field]: secret }
       await expect(dispatchUpdate(undefined, method, request, get)).rejects.toThrow('Invalid CrowdTest')
     }
   }
+  expect(Object.keys(requests)).toEqual(['inspect', 'check', 'start'])
+  expect(updateDescriptors.map(descriptor => descriptor.method)).toEqual(['inspect', 'check', 'start'])
   expect(get).not.toHaveBeenCalled()
   expect(() => updateDescriptors[0]?.result.decode({ token: secret })).toThrow('Invalid CrowdTest')
 })
-it('pins the versioned asset and only authenticates the fixed GitHub API origin', async () => {
-  const requests: { url: string; authorization: string | null; redirect?: string }[] = []
+it('fetches latest, rollback metadata and assets anonymously at every hop', async () => {
+  const requests: { url: string; authorization: string | null; cookie: string | null; credentials?: RequestCredentials; redirect?: string }[] = []
   const transport: typeof fetch = async (input, options) => {
     const url = String(input)
-    requests.push({ url, redirect: options?.redirect, authorization: new Headers(options?.headers).get('authorization') })
-    if (url.endsWith('/latest')) return Response.json({ ...next.release, assets: [...next.release.assets, { ...next.release.assets[0], id: 27, name: 'dsh-crowdtest.tgz' }] })
+    requests.push({ url, redirect: options?.redirect, authorization: new Headers(options?.headers).get('authorization'), cookie: new Headers(options?.headers).get('cookie'), credentials: options?.credentials })
+    if (url.endsWith('/latest') || url.endsWith('/tags/v0.2.16')) return Response.json({ ...next.release, assets: [...next.release.assets, { ...next.release.assets[0], id: 27, name: 'dsh-crowdtest.tgz' }] })
     if (url.endsWith('/assets/22')) return new Response(null, { status: 302, headers: { location: 'https://release-assets.githubusercontent.com/file?signature=fixture' } })
     return new Response(next.bytes)
   }
   const github = new GitHubReleases(transport)
-  const asset = await github.metadata(secret)
+  const asset = await github.metadata()
   expect(asset).toEqual(next.asset)
-  expect(await github.download(secret, asset)).toEqual(next.bytes)
+  expect(await github.metadata(next.asset.version)).toEqual(next.asset)
+  expect(await github.download(asset)).toEqual(next.bytes)
   expect(requests.map(request => request.url)).toEqual([
     'https://api.github.com/repos/kotot/dsh-crowdtest/releases/latest',
+    'https://api.github.com/repos/kotot/dsh-crowdtest/releases/tags/v0.2.16',
     'https://api.github.com/repos/kotot/dsh-crowdtest/releases/assets/22',
     'https://release-assets.githubusercontent.com/file?signature=fixture',
   ])
-  expect(requests.map(value => value.authorization)).toEqual(['Bearer ' + secret, 'Bearer ' + secret, null])
+  expect(requests.every(value => value.authorization === null && value.cookie === null && value.credentials === 'omit')).toBe(true)
   expect(requests.every(value => value.redirect === 'manual')).toBe(true)
 })
 it.each(['http://objects.githubusercontent.com/a', 'https://objects.githubusercontent.com.example.test/a',
   'https://user@objects.githubusercontent.com/a', 'https://objects.githubusercontent.com:8443/a',
   'https://api.github.com/user', 'https://example.test/asset'])('rejects an unsafe redirect before a second request (%s)', async location => {
   const transport = vi.fn(async () => new Response(null, { status: 302, headers: { location } }))
-  await expect(new GitHubReleases(transport).download(secret, next.asset)).rejects.toMatchObject({ code: 'release' })
+  await expect(new GitHubReleases(transport).download(next.asset)).rejects.toMatchObject({ code: 'release' })
   expect(transport).toHaveBeenCalledTimes(1)
 })
 it('bounds chained redirects and never follows a metadata redirect', async () => {
   const transport = vi.fn(async () => new Response(null, { status: 302, headers: { location: 'https://objects.githubusercontent.com/next' } }))
   const github = new GitHubReleases(transport)
-  await expect(github.download(secret, next.asset)).rejects.toThrow()
+  await expect(github.download(next.asset)).rejects.toThrow()
   expect(transport).toHaveBeenCalledTimes(4)
   transport.mockClear()
-  await expect(github.metadata(secret)).rejects.toThrow()
+  await expect(github.metadata()).rejects.toThrow()
   expect(transport).toHaveBeenCalledTimes(1)
 })
 it.each([
@@ -67,17 +71,36 @@ it.each([
   { assets: [{ ...next.release.assets[0], name: 'dsh-crowdtest-0.2.15.tgz' }] },
 ])('rejects invalid or ambiguous release metadata %#', async overrides => {
   const github = new GitHubReleases(async () => Response.json({ ...next.release, ...overrides }))
-  await expect(github.metadata(secret)).rejects.toMatchObject({ code: 'release' })
+  await expect(github.metadata()).rejects.toMatchObject({ code: 'release' })
 })
 it('rejects body length and digest mismatches, and sanitizes error bodies and transport exceptions', async () => {
   for (const bytes of [Buffer.alloc(4), Buffer.alloc(next.bytes.length + 1), Buffer.alloc(next.bytes.length)]) {
-    await expect(new GitHubReleases(async () => new Response(bytes)).download(secret, next.asset)).rejects.toMatchObject({ code: 'archive' })
+    await expect(new GitHubReleases(async () => new Response(bytes)).download(next.asset)).rejects.toMatchObject({ code: 'archive' })
   }
   for (const status of [401, 403, 404, 429, 500]) {
-    const error = await new GitHubReleases(async () => new Response(secret, { status })).metadata(secret).catch(value => value)
+    const error = await new GitHubReleases(async () => new Response(secret, { status })).metadata().catch(value => value)
     expect(error.message).not.toContain(secret)
+    expect(error.message).not.toMatch(/令牌|PAT|Contents/)
+    if (status === 429) expect(error.code).toBe('rate')
+    if ([401, 403, 404].includes(status)) expect(error.code).toBe('access')
   }
-  await expect(new GitHubReleases(async () => { throw Error(secret) }).metadata(secret)).rejects.toMatchObject({ code: 'network' })
+  await expect(new GitHubReleases(async () => { throw Error(secret) }).metadata()).rejects.toMatchObject({ code: 'network' })
+})
+it.each([
+  { header: 'x-ratelimit-remaining', value: '0', code: 'rate' },
+  { header: 'retry-after', value: '60', code: 'rate' },
+  { header: 'x-ratelimit-remaining', value: '1', code: 'access' },
+])('classifies anonymous GitHub 403 limits from response headers %#', async ({ header, value, code }) => {
+  const github = new GitHubReleases(async () => new Response('private error body', { status: 403, headers: { [header]: value } }))
+  await expect(github.metadata()).rejects.toMatchObject({ code })
+})
+it('rejects invalid rollback versions and mismatched tagged releases', async () => {
+  const transport = vi.fn(async () => Response.json(next.release))
+  const github = new GitHubReleases(transport)
+  await expect(github.metadata('../outside')).rejects.toMatchObject({ code: 'release' })
+  expect(transport).not.toHaveBeenCalled()
+  await expect(github.metadata('0.2.15')).rejects.toMatchObject({ code: 'release' })
+  expect(transport).toHaveBeenCalledTimes(1)
 })
 it('accepts the npm bundle shape and delegates compatibility to the native evaluator', async () => {
   const compatible = vi.fn(ok)

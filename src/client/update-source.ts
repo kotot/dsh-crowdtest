@@ -4,10 +4,9 @@ type Snapshot = {
   view?: UpdateView
   pending?: UpdateMethod
   offline: boolean
-  setupOpen: boolean
   actionError?: UpdateErrorCode
 }
-const initial: Snapshot = { offline: false, setupOpen: false }
+const initial: Snapshot = { offline: false }
 export function canCheck(view: UpdateView) {
   return !['busy', 'restart-required', 'recovery-needed'].includes(view.status.kind)
 }
@@ -23,11 +22,6 @@ export function createUpdateSource(remote: () => UpdateRemote, subscribeReset: (
     snapshot = { ...snapshot, ...patch }
     for (const listener of listeners) listener()
   }
-  const interruptedAction = () => {
-    if (snapshot.pending === 'saveCredential') return 'credentialSaveUnconfirmed'
-    if (snapshot.pending === 'removeCredential') return 'credentialRemovalUnconfirmed'
-    return snapshot.actionError
-  }
   const read = () => execute('inspect', signal => remote().inspect({}, signal))
   const execute = async (method: UpdateMethod, call: (signal: AbortSignal) => Promise<UpdateRemoteResult>) => {
     if (!controller || snapshot.pending) return
@@ -39,12 +33,12 @@ export function createUpdateSource(remote: () => UpdateRemote, subscribeReset: (
       if (signal.aborted) return
       if (!result.ok) throw new Error()
       const view = result.value
-      const saved = method === 'saveCredential' && !view.actionError && view.configured
-      const inspectOnEntry = method === 'inspect' && checkOnEntry && !snapshot.actionError && ['idle', 'current', 'available', 'completed'].includes(view.status.kind)
+      const eligible = ['idle', 'current', 'available', 'completed'].includes(view.status.kind) ||
+        view.status.kind === 'failed' && view.status.code === 'recheck'
+      const inspectOnEntry = method === 'inspect' && checkOnEntry && !snapshot.actionError && eligible
       if (method === 'inspect') checkOnEntry = false
-      publish({ view, offline: false, actionError: method === 'inspect' ? snapshot.actionError : view.actionError,
-        setupOpen: saved || method === 'removeCredential' && !view.actionError ? false : snapshot.setupOpen })
-      if ((inspectOnEntry || saved) && view.configured && canCheck(view)) {
+      publish({ view, offline: false, actionError: method === 'inspect' ? snapshot.actionError : view.actionError })
+      if (inspectOnEntry && canCheck(view)) {
         publish({ pending: 'check' })
         const checked = await remote().check({}, signal)
         if (signal.aborted) return
@@ -52,7 +46,7 @@ export function createUpdateSource(remote: () => UpdateRemote, subscribeReset: (
         publish({ view: checked.value, actionError: checked.value.actionError })
       }
     } catch {
-      if (!signal.aborted) publish({ offline: true, actionError: interruptedAction() })
+      if (!signal.aborted) publish({ offline: true })
     }
     finally {
       if (!signal.aborted) {
@@ -64,7 +58,7 @@ export function createUpdateSource(remote: () => UpdateRemote, subscribeReset: (
   const reconnect = () => {
     controller?.abort()
     controller = new AbortController()
-    publish({ pending: undefined, actionError: interruptedAction() })
+    publish({ pending: undefined })
     void read()
   }
   const focus = () => { void read() }
@@ -74,7 +68,7 @@ export function createUpdateSource(remote: () => UpdateRemote, subscribeReset: (
     clearTimeout(timer)
     offReset?.()
     window.removeEventListener('focus', focus)
-    snapshot = { ...initial, actionError: interruptedAction() }
+    snapshot = { ...initial, actionError: snapshot.actionError }
     checkOnEntry = true
   }
   return {
@@ -90,11 +84,8 @@ export function createUpdateSource(remote: () => UpdateRemote, subscribeReset: (
       return () => { listeners.delete(listener); if (!listeners.size) stop() }
     },
     dispose() { if (listeners.size) stop(); listeners.clear() },
-    openSetup: (open: boolean) => publish({ setupOpen: open }),
     check: () => execute('check', signal => remote().check({}, signal)),
     start: (candidateId: string) => execute('start', signal => remote().start({ candidateId }, signal)),
-    save: (token: string) => execute('saveCredential', signal => remote().saveCredential({ token }, signal)),
-    remove: () => execute('removeCredential', signal => remote().removeCredential({}, signal)),
     reconnect: focus,
   }
 }

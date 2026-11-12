@@ -1,11 +1,11 @@
-import { mkdtemp, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, expect, it, vi } from 'vitest'
 import { GitHubReleases } from '../src/update-github.ts'
-import { CREDENTIAL_REF, dispatchUpdate, PluginUpdater, type NativeBundle, type UpdatePlatform } from '../src/update-install.ts'
-import type { UpdateView } from '../src/update-protocol.ts'
+import { dispatchUpdate, PluginUpdater, type NativeBundle, type UpdatePlatform } from '../src/update-install.ts'
+import { updateErrors, type UpdateView } from '../src/update-protocol.ts'
 import { payload } from './update-fixture.ts'
 
 const roots: string[] = []
@@ -33,14 +33,8 @@ async function fixture(target = next, compatible: UpdatePlatform['compatible'] =
     Object.assign(bundle, { source: 'file:' + file, enabled: options.enabled, version: release.asset.version })
     return { application: 'applied' }
   })
-  const secrets = new Map<string, string>()
   const platform: UpdatePlatform = {
     profile, running: previous.asset.version, compatible, manager: { listBundles: async () => [bundle], installBundle: install },
-    credentials: {
-      set: async (ref, value) => { secrets.set(ref, value) }, unset: async ref => { secrets.delete(ref) },
-      describe: async ref => ({ configured: secrets.has(ref) }),
-      resolve: async ref => { const value = secrets.get(ref); return value ? { value } : undefined },
-    },
     atomic: {
       withFileLock: async (file, action, options) => {
         const until = Date.now() + options.waitMs
@@ -57,7 +51,9 @@ async function fixture(target = next, compatible: UpdatePlatform['compatible'] =
     },
   }
   const transport = vi.fn<typeof fetch>(async (url, init) => {
-    expect(new Headers(init?.headers).get('authorization')).toBe('Bearer ' + secret)
+    expect(new Headers(init?.headers).has('authorization')).toBe(false)
+    expect(new Headers(init?.headers).has('cookie')).toBe(false)
+    expect(init?.credentials).toBe('omit')
     if (String(url).endsWith('/latest')) return Response.json(target.release)
     if (String(url).endsWith('/tags/v0.2.15')) return Response.json(previous.release)
     return new Response(target.bytes)
@@ -66,38 +62,33 @@ async function fixture(target = next, compatible: UpdatePlatform['compatible'] =
   const create = (running = previous.asset.version) => new PluginUpdater({ ...platform, running }, github)
   const updater = create()
   const checked = async () => {
-    await updater.setCredential(secret); await updater.check()
+    await updater.check()
     const status = (await updater.inspect()).status
     if (status.kind !== 'available') throw new Error('missing update candidate')
     return status.candidateId
   }
-  return { updater, profile, platform, create, checked, transport, secrets, bundle, deploy, directory, previousPath, install }
+  return { updater, profile, platform, create, checked, transport, bundle, deploy, directory, previousPath, install }
 }
 async function settled(updater: PluginUpdater): Promise<UpdateView> {
   let view = await updater.inspect()
   await vi.waitFor(async () => { view = await updater.inspect(); expect(view.status.kind).not.toBe('busy') })
   return view
 }
-it('keeps credential and run data out of the journal and all public views', async () => {
-  const { updater, profile, secrets, transport } = await fixture()
-  expect((await updater.inspect()).configured).toBe(false)
+it('checks public releases without a credential service and keeps journals private', async () => {
+  const { updater, profile, transport, platform } = await fixture()
+  expect(platform).not.toHaveProperty('credentials')
   await updater.check()
-  expect((await updater.inspect()).status).toEqual({ kind: 'failed', code: 'credential' })
-  expect(transport).not.toHaveBeenCalled()
-  await updater.setCredential(secret); await updater.check()
-  expect([...secrets.keys()]).toEqual([CREDENTIAL_REF])
   expect((await updater.inspect()).status.kind).toBe('available')
+  expect(transport).toHaveBeenCalledTimes(1)
   const journal = join(profile, '.crowdtest-updater', 'receipt.json')
   expect(await readFile(journal, 'utf8')).not.toContain(secret)
-  expect(JSON.stringify(await updater.inspect())).not.toContain(secret)
+  expect(await updater.inspect()).not.toHaveProperty('configured')
   expect((await stat(journal)).mode & 0o777).toBe(0o600)
-  await updater.setCredential()
-  expect((await updater.inspect()).configured).toBe(false)
 })
 it.each(['0.2.15', '0.2.9'])('handles same/older %s without offering install', async version => {
   const { updater, transport, install } = await fixture()
   transport.mockResolvedValueOnce(Response.json(payload(version).release))
-  await updater.setCredential(secret); await updater.check()
+  await updater.check()
   expect((await updater.inspect()).status).toEqual({ kind: 'current' })
   expect(install).not.toHaveBeenCalled()
 })
@@ -137,7 +128,7 @@ it('refuses development links and foreign or protected bundles without networkin
   for (const change of [{ source: 'link:/development' }, { availability: 'installation' }, { removable: false }, { readOnlyReason: 'protected' }]) {
     const { updater, bundle, install, transport } = await fixture()
     Object.assign(bundle, change)
-    await updater.setCredential(secret); await updater.check()
+    await updater.check()
     expect((await updater.inspect()).status).toEqual({ kind: 'failed', code: 'unsupported' })
     expect(install).not.toHaveBeenCalled(); expect(transport).not.toHaveBeenCalled()
   }
@@ -365,15 +356,6 @@ it.each([true, false])('requires the exact tag to match a manual installation af
   expect((await current.inspect()).status.kind).toBe('available')
 })
 
-it('distinguishes a rejected credential write from an old configured credential and stored status', async () => {
-  const { updater, checked, platform, secrets } = await fixture()
-  await checked()
-  platform.credentials.set = async () => { throw Error('fixture storage denial') }
-  const view = await dispatchUpdate(undefined, 'saveCredential', { token: 'replacement' }, async () => updater)
-  expect(view).toMatchObject({ configured: true, actionError: 'credentialStore' })
-  expect(secrets.get(CREDENTIAL_REF)).toBe(secret)
-})
-
 it('accepts a checked candidate while another window is waiting for GitHub metadata', async () => {
   const { updater, checked, create, transport, install } = await fixture()
   const candidateId = await checked()
@@ -435,4 +417,92 @@ it.each(['older', 'newer', 'error'])('retains installed proof when the release c
   expect((await reopened.inspect()).status.kind).toBe('recovery-needed')
   expect(transport.mock.calls).toHaveLength(count)
   expect(install).toHaveBeenCalledTimes(1)
+})
+
+it.each(['credential', 'credentialStore', 'credentialSaveUnconfirmed', 'credentialRemovalUnconfirmed'])('rechecks a strict legacy %s receipt without rewriting it during inspection', async code => {
+  const { updater, profile, checked, transport } = await fixture()
+  await checked()
+  const path = join(profile, '.crowdtest-updater', 'receipt.json')
+  const stored = JSON.stringify({ kind: 'failed', code, latest: '0.2.16' })
+  await writeFile(path, stored)
+  expect(await updater.inspect()).toMatchObject({ latestVersion: '0.2.16', status: { kind: 'failed', code: 'recheck' } })
+  expect(await readFile(path, 'utf8')).toBe(stored)
+  const count = transport.mock.calls.length
+  await updater.check()
+  expect(transport.mock.calls).toHaveLength(count + 1)
+  expect((await updater.inspect()).status.kind).toBe('available')
+  expect(JSON.parse(await readFile(path, 'utf8')).kind).toBe('checked')
+})
+
+it.each(['success', 'network'])('retains installed proof after a migrated receipt check returns %s', async result => {
+  const { updater, checked, create, profile, directory, transport } = await fixture()
+  await updater.start(await checked())
+  await settled(updater)
+  const current = create('0.2.16')
+  await current.check()
+  const path = join(profile, '.crowdtest-updater', 'receipt.json')
+  const { installedProof } = JSON.parse(await readFile(path, 'utf8'))
+  expect(installedProof).toBeDefined()
+  const stored = JSON.stringify({ kind: 'failed', code: 'credential', latest: '0.2.17', installedProof })
+  await writeFile(path, stored)
+  expect(await current.inspect()).toMatchObject({ latestVersion: '0.2.17', status: { kind: 'failed', code: 'recheck' } })
+  expect(await readFile(path, 'utf8')).toBe(stored)
+  if (result === 'network') transport.mockResolvedValueOnce(new Response(null, { status: 503 }))
+  await current.check()
+  expect(JSON.parse(await readFile(path, 'utf8')).installedProof).toEqual(installedProof)
+  await writeFile(join(directory, 'lib/client.js'), 'modified after legacy recheck')
+  const count = transport.mock.calls.length
+  expect((await current.inspect()).status.kind).toBe('recovery-needed')
+  await current.check()
+  expect(transport.mock.calls).toHaveLength(count)
+})
+
+it.each(['restart', 'payload', 'archive', 'mismatched-proof'])('keeps %s safety checks ahead of a legacy credential failure', async state => {
+  const { updater, checked, create, profile, directory, transport } = await fixture()
+  await updater.start(await checked())
+  await settled(updater)
+  const current = create('0.2.16')
+  await current.check()
+  const path = join(profile, '.crowdtest-updater', 'receipt.json')
+  const { installedProof } = JSON.parse(await readFile(path, 'utf8'))
+  if (state === 'payload') await writeFile(join(directory, 'lib/client.js'), 'corrupted before legacy read')
+  if (state === 'archive') {
+    const archive = join(profile, '.crowdtest-updater', installedProof.jobId, `target-${installedProof.hash}.tgz`)
+    await chmod(archive, 0o600)
+    await writeFile(archive, 'bad archive')
+  }
+  if (state === 'mismatched-proof') installedProof.version = '0.2.17'
+  const stored = JSON.stringify({ kind: 'failed', code: 'credentialStore', latest: '0.2.17', installedProof })
+  await writeFile(path, stored)
+  const selected = state === 'restart' ? create() : current
+  const count = transport.mock.calls.length
+  expect((await selected.inspect()).status.kind).toBe(state === 'restart' ? 'restart-required' : 'recovery-needed')
+  await selected.check()
+  expect(transport.mock.calls).toHaveLength(count)
+  expect(await readFile(path, 'utf8')).toBe(stored)
+})
+
+it.each([
+  { code: 'unknown' },
+  { code: 'credential', unexpected: true },
+  { code: 'credential', installedProof: { jobId: 'invalid', role: 'target', version: '0.2.16', hash: '0'.repeat(64) } },
+])('rejects malformed legacy receipt %# rather than resetting state', async changes => {
+  const { updater, checked, profile } = await fixture()
+  await checked()
+  const path = join(profile, '.crowdtest-updater', 'receipt.json')
+  const stored = JSON.stringify({ kind: 'failed', latest: null, ...changes })
+  await writeFile(path, stored)
+  await expect(updater.inspect()).rejects.toMatchObject({ code: 'state' })
+  expect(await readFile(path, 'utf8')).toBe(stored)
+})
+
+
+it.each(Object.keys(updateErrors))('continues to read a current failed receipt with code %s', async code => {
+  const { updater, profile, checked } = await fixture()
+  await checked()
+  const path = join(profile, '.crowdtest-updater', 'receipt.json')
+  const stored = JSON.stringify({ kind: 'failed', code, latest: null })
+  await writeFile(path, stored)
+  expect((await updater.inspect()).status).toEqual({ kind: 'failed', code })
+  expect(await readFile(path, 'utf8')).toBe(stored)
 })

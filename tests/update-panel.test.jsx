@@ -5,8 +5,8 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { apply } from '../src/client/index.tsx'
 
 const own = { kind: 'bundle', pkg: { name: 'dsh-crowdtest', enabled: true } }
-const base = { runningVersion: '0.2.15', installedVersion: '0.2.15', latestVersion: null, configured: false, status: { kind: 'idle' } }
-const available = { ...base, configured: true, latestVersion: '0.2.16', status: { kind: 'available', candidateId: 'server-id' } }
+const base = { runningVersion: '0.2.15', installedVersion: '0.2.15', latestVersion: null, status: { kind: 'idle' } }
+const available = { ...base, latestVersion: '0.2.16', status: { kind: 'available', candidateId: 'server-id' } }
 let element, root, remote, view, reset, components, disposals
 const button = text => [...element.querySelectorAll('button')].find(button => button.textContent === text)
 const render = subject => act(async () => {
@@ -23,8 +23,7 @@ beforeEach(async () => {
   root = createRoot(element)
   view = base
   const respond = () => ({ ok: true, value: view })
-  remote = { inspect: vi.fn(async () => respond()), check: vi.fn(async () => respond()), start: vi.fn(async () => respond()),
-    saveCredential: vi.fn(async () => respond()), removeCredential: vi.fn(async () => respond()) }
+  remote = { inspect: vi.fn(async () => respond()), check: vi.fn(async () => respond()), start: vi.fn(async () => respond()) }
   components = new Map()
   disposals = []
   const scope = {
@@ -59,28 +58,16 @@ it('subscribes only for the enabled CrowdTest bundle and reconnects without show
   expect(element.textContent).not.toContain('internal details')
   await act(async () => reset())
   expect(button('检查更新')).toBeDefined()
-  expect(remote.check).not.toHaveBeenCalled()
+  expect(remote.check).toHaveBeenCalledTimes(1)
   await render({ kind: 'row' })
   expect(reset).toBeUndefined()
 })
 
-it('opens only credential setup, clears its masked input and automatically offers the pinned update in native header slots', async () => {
-  await render(own)
-  expect(element.querySelector('input')).toBeNull()
-  expect(element.querySelector('[data-slot=section]').textContent).toBe('')
-  await click(button('检查更新'))
-  const input = element.querySelector('input')
-  expect(document.activeElement).toBe(input)
-  expect(input.type).toBe('password')
-  expect(input.value).toBe('')
-  input.value = 'dummy-test-credential'
-  remote.saveCredential.mockResolvedValueOnce({ ok: true, value: { ...base, configured: true } })
+it('automatically offers the pinned public update in native header slots without a setup form', async () => {
   view = available
-  await click(button('保存令牌'))
-  expect(input.value).toBe('')
-  expect(remote.saveCredential).toHaveBeenCalledWith({ token: 'dummy-test-credential' }, expect.any(AbortSignal))
-  expect(element.innerHTML).not.toContain('dummy-test-credential')
-  expect(element.querySelector('input')).toBeNull()
+  await render(own)
+  expect(element.querySelector('input, form, details')).toBeNull()
+  expect(element.textContent).not.toMatch(/令牌|Contents/)
   expect(remote.check).toHaveBeenCalledTimes(1)
   expect(element.querySelector('[data-slot=badge] [data-tone=info]').textContent).toBe('可更新')
   const update = element.querySelector('[data-slot=actions] button[data-variant=primary][data-size=sm]')
@@ -122,39 +109,8 @@ it('coalesces one inspection and one automatic metadata check across three slots
   expect(remote.check).toHaveBeenCalledTimes(2)
 })
 
-it('keeps configured credentials replaceable and removable from the collapsed section', async () => {
-  view = available
-  await render(own)
-  const details = element.querySelector('details')
-  expect(details.open).toBe(false)
-  await act(async () => { details.open = true; details.dispatchEvent(new Event('toggle')) })
-  expect(button('保存令牌')).toBeDefined()
-  expect(button('移除令牌')).toBeDefined()
-  view = base
-  await click(button('移除令牌'))
-  expect(remote.removeCredential).toHaveBeenCalledTimes(1)
-  expect(element.querySelector('input')).toBeNull()
-  expect(button('检查更新')).toBeDefined()
-})
-
-it('keeps a failed token replacement visible without checking with the old token', async () => {
-  view = available
-  await render(own)
-  const details = element.querySelector('details')
-  await act(async () => { details.open = true; details.dispatchEvent(new Event('toggle')) })
-  element.querySelector('input').value = 'replacement'
-  const failure = { ...available, status: { kind: 'failed', code: 'credentialStore' }, actionError: 'credentialStore' }
-  remote.saveCredential.mockResolvedValueOnce({ ok: true, value: failure })
-  await click(button('保存令牌'))
-  expect(remote.check).toHaveBeenCalledTimes(1)
-  expect(element.querySelector('input')).not.toBeNull()
-  await act(async () => window.dispatchEvent(new Event('focus')))
-  expect(element.querySelector('[role=status]').textContent).toContain('凭据')
-  expect(button('更新到 0.2.16')).toBeUndefined()
-})
-
 it('preserves an install failure on reentry until the user explicitly retries', async () => {
-  view = { ...base, configured: true, status: { kind: 'failed', code: 'install' } }
+  view = { ...base, status: { kind: 'failed', code: 'install' } }
   await render(own)
   expect(remote.check).not.toHaveBeenCalled()
   expect(element.querySelector('[role=status]').textContent).toContain('DSH 未能完成安装')
@@ -164,57 +120,51 @@ it('preserves an install failure on reentry until the user explicitly retries', 
   expect(button('更新到 0.2.16')).toBeDefined()
 })
 
-it.each(['saveCredential', 'removeCredential'])('preserves an unconfirmed %s result through reconnect and focus', async method => {
-  view = available
+it('automatically rechecks only a migrated legacy credential failure on entry', async () => {
+  view = { ...base, status: { kind: 'failed', code: 'recheck' } }
+  remote.check.mockResolvedValueOnce({ ok: true, value: available })
   await render(own)
-  const details = element.querySelector('details')
-  await act(async () => { details.open = true; details.dispatchEvent(new Event('toggle')) })
-  const input = element.querySelector('input')
-  input.value = 'fixture-replacement'
-  if (method === 'saveCredential') remote[method].mockRejectedValueOnce(Error('fixture transport failure'))
-  else remote[method].mockResolvedValueOnce({ ok: false })
-  await click(button(method === 'saveCredential' ? '保存令牌' : '移除令牌'))
-  await act(async () => reset())
+  expect(remote.check).toHaveBeenCalledTimes(1)
+  expect(button('更新到 0.2.16')).toBeDefined()
   await act(async () => window.dispatchEvent(new Event('focus')))
   expect(remote.check).toHaveBeenCalledTimes(1)
-  expect(element.querySelector('[role=status]')?.textContent).toContain(method === 'saveCredential' ? '是否已保存' : '是否已移除')
-  expect(button('更新到 0.2.16')).toBeUndefined()
 })
 
-it.each([
-  ['saveCredential', 'reset'], ['removeCredential', 'reset'],
-  ['saveCredential', 'unmount'], ['removeCredential', 'unmount'],
-])('preserves pending %s as unconfirmed across %s', async (method, interruption) => {
+it.each(['network', 'rate', 'access', 'state'])('leaves a %s failure for manual retry', async code => {
+  view = { ...base, status: { kind: 'failed', code } }
+  await render(own)
+  expect(remote.check).not.toHaveBeenCalled()
+  view = available
+  await click(button('检查更新'))
+  expect(remote.check).toHaveBeenCalledTimes(1)
+  expect(button('更新到 0.2.16')).toBeDefined()
+})
+
+it.each(['reset', 'unmount'])('inspects accepted updates after %s without repeating start', async interruption => {
   const request = Promise.withResolvers()
   view = available
   await render(own)
-  const details = element.querySelector('details')
-  await act(async () => { details.open = true; details.dispatchEvent(new Event('toggle')) })
-  element.querySelector('input').value = 'pending-fixture'
-  remote[method].mockReturnValueOnce(request.promise)
-  await click(button(method === 'saveCredential' ? '保存令牌' : '移除令牌'))
-  const signal = remote[method].mock.calls[0][1]
+  remote.start.mockReturnValueOnce(request.promise)
+  await click(button('更新到 0.2.16'))
+  const signal = remote.start.mock.calls[0][1]
+  view = { ...available, status: { kind: 'busy', phase: 'installing' } }
   if (interruption === 'reset') await act(async () => reset())
   else { await render({ kind: 'row' }); await render(own) }
   expect(signal.aborted).toBe(true)
   await act(async () => request.resolve({ ok: true, value: available }))
-  expect(element.querySelector('[role=status]').textContent).toContain(method === 'saveCredential' ? '是否已保存' : '是否已移除')
+  expect(remote.start).toHaveBeenCalledTimes(1)
   expect(remote.check).toHaveBeenCalledTimes(1)
-  expect(button('更新到 0.2.16')).toBeUndefined()
+  expect(button('正在更新…').disabled).toBe(true)
 })
 
-it('keeps an acknowledged credential save when only its following check is interrupted', async () => {
-  const checking = Promise.withResolvers()
-  await render(own)
-  await click(button('检查更新'))
-  element.querySelector('input').value = 'pending-check-fixture'
+it('suppresses a stale candidate after an action error until manual retry', async () => {
   view = available
-  remote.check.mockReturnValueOnce(checking.promise)
-  await click(button('保存令牌'))
-  const signal = remote.check.mock.calls[0][1]
-  await act(async () => reset())
-  expect(signal.aborted).toBe(true)
-  await act(async () => checking.resolve({ ok: true, value: available }))
-  expect(element.textContent).not.toContain('未能确认')
+  await render(own)
+  remote.start.mockResolvedValueOnce({ ok: true, value: { ...available, status: { kind: 'failed', code: 'changed' }, actionError: 'changed' } })
+  await click(button('更新到 0.2.16'))
+  await act(async () => window.dispatchEvent(new Event('focus')))
+  expect(button('更新到 0.2.16')).toBeUndefined()
+  expect(element.querySelector('[role=status]').textContent).toContain('重新检查')
+  await click(button('检查更新'))
   expect(button('更新到 0.2.16')).toBeDefined()
 })

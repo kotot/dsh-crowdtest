@@ -49,7 +49,7 @@ async function readBody(response: Response, limit: number): Promise<Buffer> {
 
 export class GitHubReleases {
   constructor(private readonly transport: typeof fetch = fetch) {}
-  private async request(path: string, token: string, limit: number, asset: boolean): Promise<Buffer> {
+  private async request(path: string, limit: number, asset: boolean): Promise<Buffer> {
     const abort = new AbortController()
     const timer = setTimeout(() => abort.abort(), 45_000)
     try {
@@ -57,12 +57,13 @@ export class GitHubReleases {
       for (let hop = 0; hop <= 3; hop++) {
         const headers: Record<string, string> = { Accept: asset ? 'application/octet-stream' : 'application/vnd.github+json' }
         if (url.origin === 'https://api.github.com') {
-          headers.Authorization = `Bearer ${token}`
           headers['X-GitHub-Api-Version'] = '2022-11-28'
         }
         const response = await this.transport(url.href, { headers, redirect: 'manual', signal: abort.signal, credentials: 'omit' })
         if (response.status === 200) return await readBody(response, limit)
         await response.body?.cancel()
+        if (response.status === 429 || response.status === 403 &&
+          (response.headers.get('x-ratelimit-remaining') === '0' || response.headers.has('retry-after'))) throw new UpdateError('rate')
         if ([401, 403, 404].includes(response.status)) throw new UpdateError('access')
         if (!asset || ![301, 302, 303, 307, 308].includes(response.status)) throw new UpdateError('network')
         const location = response.headers.get('location')
@@ -76,18 +77,18 @@ export class GitHubReleases {
       throw error instanceof UpdateError ? error : new UpdateError('network')
     } finally { clearTimeout(timer); abort.abort() }
   }
-  async metadata(token: string, version?: string): Promise<ReleaseAsset> {
+  async metadata(version?: string): Promise<ReleaseAsset> {
     if (version !== undefined && (!valid(version) || !/^[0-9]/.test(version))) throw new UpdateError('release')
     const route = version === undefined ? 'latest' : `tags/v${encodeURIComponent(version)}`
-    const data = await this.request(`${RELEASES}/${route}`, token, 512 * 1024, false)
+    const data = await this.request(`${RELEASES}/${route}`, 512 * 1024, false)
     try {
       const result = releaseAsset(JSON.parse(data.toString('utf8')))
       if (version !== undefined && result.version !== version) throw new UpdateError('release')
       return result
     } catch { throw new UpdateError('release') }
   }
-  async download(token: string, asset: ReleaseAsset): Promise<Buffer> {
-    const data = await this.request(`${RELEASES}/assets/${asset.assetId}`, token, asset.size, true)
+  async download(asset: ReleaseAsset): Promise<Buffer> {
+    const data = await this.request(`${RELEASES}/assets/${asset.assetId}`, asset.size, true)
     if (data.length !== asset.size || sha256(data) !== asset.sha256) throw new UpdateError('archive')
     return data
   }

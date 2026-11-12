@@ -8,13 +8,6 @@ import { matchesInstalled, readRegularFile, verifyArchive, type Compatibility, t
 import { assetSchema, GitHubReleases, MAX_ARCHIVE, sameAsset, sha256, type ReleaseAsset } from './update-github.ts'
 import { digest, PACKAGE, phase, requests, UpdateError, updateErrors, validated, versionText, type Phase, type UpdateMethod, type UpdateErrorCode, type UpdateStatus, type UpdateView } from './update-protocol.ts'
 
-export const CREDENTIAL_REF = 'CROWDTEST_GITHUB_UPDATE_TOKEN'
-export interface UpdateCredentials {
-  describe(ref: string): Promise<{ configured: boolean }>
-  resolve(ref: string): Promise<{ value: string } | undefined>
-  set(ref: string, value: string): Promise<void>
-  unset(ref: string): Promise<void>
-}
 export interface NativeBundle {
   name: string; version?: string; source?: string; availability: string; installed: boolean
   enabled: boolean; removable: boolean; official: boolean; error?: unknown; readOnlyReason?: string
@@ -27,7 +20,6 @@ export interface UpdatePlatform {
   readonly profile: string
   readonly running: string
   readonly manager: NativeManager
-  readonly credentials: UpdateCredentials
   readonly compatible: Compatibility
   readonly atomic: {
     withFileLock<T>(file: string, action: () => Promise<T>, options: { waitMs: number }): Promise<T>
@@ -40,13 +32,15 @@ const proofField = { installedProof: z.optional(installedProof) }
 const candidate = { candidateId: z.uuid(), asset: assetSchema, baseline: digest }
 const job = { ...candidate, jobId: z.uuid(), previous: versionText, enabled: z.boolean(), previousHash: z.optional(digest) }
 const code = z.enum(Object.keys(updateErrors) as [UpdateErrorCode, ...UpdateErrorCode[]])
+const legacyCode = z.enum(['credential', 'credentialStore', 'credentialSaveUnconfirmed', 'credentialRemovalUnconfirmed'])
+const storedCode = z.pipe(z.union([code, legacyCode]), z.transform(value => legacyCode.safeParse(value).success ? 'recheck' : validated(code, value)))
 const receipt = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('checked'), ...candidate, ...proofField }),
   z.strictObject({ kind: z.literal('active'), ...job, ...proofField, phase, pid: z.int().check(z.positive()) }),
   z.strictObject({ kind: z.literal('installed'), ...job }),
   z.strictObject({ kind: z.literal('restored'), ...job, previousHash: digest }),
   z.strictObject({ kind: z.literal('recovery-needed'), ...job }),
-  z.strictObject({ kind: z.literal('failed'), ...proofField, code, latest: z.nullable(versionText) }),
+  z.strictObject({ kind: z.literal('failed'), ...proofField, code: storedCode, latest: z.nullable(versionText) }),
 ])
 type Receipt = z.infer<typeof receipt>
 type Active = Extract<Receipt, { kind: 'active' }>
@@ -192,22 +186,13 @@ export class PluginUpdater {
     if (identity(installed) !== record.baseline) return { kind: 'failed', code: 'changed' }
     return gt(record.asset.version, installed.version) ? { kind: 'available', candidateId: record.candidateId } : { kind: 'current' }
   }
-  private async token(): Promise<string> {
-    const result = await this.platform.credentials.resolve(CREDENTIAL_REF)
-    if (!result?.value) throw new UpdateError('credential')
-    return result.value
-  }
   async inspect(): Promise<UpdateView> {
-    const [record, bundle, credential] = await Promise.all([this.read(), this.bundle(), this.platform.credentials.describe(CREDENTIAL_REF)])
+    const [record, bundle] = await Promise.all([this.read(), this.bundle()])
     return {
-      runningVersion: this.platform.running, installedVersion: bundle?.version && valid(bundle.version) ? bundle.version : null, configured: credential.configured,
+      runningVersion: this.platform.running, installedVersion: bundle?.version && valid(bundle.version) ? bundle.version : null,
       latestVersion: record ? record.kind === 'failed' ? record.latest : record.asset.version : null,
       status: await this.status(record, bundle),
     }
-  }
-  async setCredential(token?: string): Promise<void> {
-    if (token === undefined) await this.platform.credentials.unset(CREDENTIAL_REF)
-    else await this.platform.credentials.set(CREDENTIAL_REF, token)
   }
   private blocked(status: UpdateStatus) {
     return status.kind === 'busy' || status.kind === 'restart-required' || status.kind === 'recovery-needed'
@@ -222,9 +207,8 @@ export class PluginUpdater {
     let checked: { kind: 'checked'; asset: ReleaseAsset } | { kind: 'failed'; code: UpdateErrorCode }
     let proof: VerifiedArchive | undefined
     try {
-      const token = await this.token()
-      if (initial.kind === 'verify-install') proof = await this.previous(token, installed)
-      checked = { kind: 'checked', asset: await this.github.metadata(token) }
+      if (initial.kind === 'verify-install') proof = await this.previous(installed)
+      checked = { kind: 'checked', asset: await this.github.metadata() }
     } catch (error) { checked = { kind: 'failed', code: errorCode(error, 'network') } }
 
     const unchanged = (current: Receipt | undefined) => JSON.stringify(current) === JSON.stringify(record)
@@ -275,7 +259,7 @@ export class PluginUpdater {
     })
     await accepted.promise
   }
-  private async previous(token: string, installed: Installed) {
+  private async previous(installed: Installed) {
     if (isPackageFile(installed.source)) {
       try {
         const bytes = await readRegularFile(installed.source.slice(5), MAX_ARCHIVE)
@@ -284,8 +268,8 @@ export class PluginUpdater {
       } catch {}
     }
     try {
-      const release = await this.github.metadata(token, installed.version)
-      const archive = await verifyArchive(await this.github.download(token, release), installed.version, this.platform.compatible)
+      const release = await this.github.metadata(installed.version)
+      const archive = await verifyArchive(await this.github.download(release), installed.version, this.platform.compatible)
       if (await matchesInstalled(installed.directory, archive)) return archive
     } catch {}
     throw new UpdateError('rollback')
@@ -301,14 +285,13 @@ export class PluginUpdater {
     const terminal = { candidateId: job.candidateId, asset, baseline: job.baseline, jobId, previous: old.version, enabled: old.enabled }
     let attemptedInstall = false
     try {
-      const token = await this.token()
-      if (!sameAsset(asset, await this.github.metadata(token))) throw new UpdateError('changed')
+      if (!sameAsset(asset, await this.github.metadata())) throw new UpdateError('changed')
       await advance('downloading')
-      const bytes = await this.github.download(token, asset)
+      const bytes = await this.github.download(asset)
       await advance('validating')
       const target = await verifyArchive(bytes, asset.version, this.platform.compatible)
       await advance('backup')
-      const backup = await this.previous(token, old)
+      const backup = await this.previous(old)
       const dir = join(this.directory, jobId)
       await mkdir(dir, { mode: 0o700 })
       const nextPath = join(dir, `target-${asset.sha256}.tgz`)
@@ -363,12 +346,10 @@ export async function dispatchUpdate(principal: unknown, method: UpdateMethod, i
         case 'inspect': break
         case 'check': await updater.check(); break
         case 'start': await updater.start(validated(requests.start, request).candidateId); break
-        case 'saveCredential': await updater.setCredential(validated(requests.saveCredential, request).token); break
-        case 'removeCredential': await updater.setCredential(); break
       }
     } catch (error) {
       const view = await updater.inspect()
-      const code = errorCode(error, method === 'saveCredential' || method === 'removeCredential' ? 'credentialStore' : 'state')
+      const code = errorCode(error, 'state')
       return { ...view, actionError: code, status: { kind: 'failed', code } }
     }
     return await updater.inspect()
