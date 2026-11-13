@@ -39,11 +39,11 @@ function Actions({ source }: SourceProps) {
   if (offline) return <Button variant="outline" size="sm" icon={icon} disabled={!!pending} onClick={source.reconnect}>重新连接</Button>
   if (pending === 'start' || view?.status.kind === 'busy') return <Button variant="primary" size="sm" icon={icon} disabled>正在更新…</Button>
   if (!view || !canCheck(view)) return null
-  const candidate = !actionError && view.status.kind === 'available' ? view.status.candidateId : undefined
-  if (candidate && view.latestVersion) return <Button variant="primary" size="sm" icon={icon} disabled={!!pending}
+  const candidate = !pending && !actionError && view.status.kind === 'available' ? view.status.candidateId : undefined
+  if (candidate && view.latestVersion) return <Button variant="primary" size="sm" icon={icon}
     onClick={() => { void source.start(candidate) }}>更新到 {view.latestVersion}</Button>
   return <Button variant="outline" size="sm" icon={icon} disabled={!!pending} onClick={() => { void source.check() }}>
-    {pending === 'check' ? '正在检查…' : '检查更新'}
+    检查更新
   </Button>
 }
 function Section({ source }: SourceProps) {

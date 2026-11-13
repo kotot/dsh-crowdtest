@@ -88,6 +88,24 @@ it('automatically offers the pinned public update in native header slots without
   expect(remote.check).toHaveBeenCalledTimes(1)
 })
 
+it.each(['check', 'inspect'])('shows a disabled check action while %s refreshes an available version', async method => {
+  view = available
+  const request = Promise.withResolvers()
+  if (method === 'check') remote.check.mockReturnValueOnce(request.promise)
+  await render(own)
+  if (method === 'inspect') {
+    remote.inspect.mockReturnValueOnce(request.promise)
+    await act(async () => window.dispatchEvent(new Event('focus')))
+  }
+  const action = element.querySelector('[data-slot=actions] button')
+  expect(action.textContent).toBe('检查更新')
+  expect(action.disabled).toBe(true)
+  await click(action)
+  expect(remote.start).not.toHaveBeenCalled()
+  await act(async () => request.resolve({ ok: true, value: { ...available, latestVersion: '0.2.17' } }))
+  expect(button('更新到 0.2.17').disabled).toBe(false)
+})
+
 it('coalesces one inspection and one automatic metadata check across three slots per detail visit', async () => {
   const gate = Promise.withResolvers()
   remote.inspect.mockReturnValueOnce(gate.promise)
@@ -146,6 +164,7 @@ it.each(['reset', 'unmount'])('inspects accepted updates after %s without repeat
   await render(own)
   remote.start.mockReturnValueOnce(request.promise)
   await click(button('更新到 0.2.16'))
+  expect(button('正在更新…').disabled).toBe(true)
   const signal = remote.start.mock.calls[0][1]
   view = { ...available, status: { kind: 'busy', phase: 'installing' } }
   if (interruption === 'reset') await act(async () => reset())
