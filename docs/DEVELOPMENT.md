@@ -12,13 +12,13 @@ CrowdTest 众测插件：参与者在 DeepSeek Harness 桌面端领取众测任�
 
 ## 更新插件
 
-0.2.16 需要 DSH 0.2.2-rc.1 或更新的受支持版本。每次打开已启用的插件详情页会自动检查一次 `kotot/dsh-crowdtest` 的公开发布，无需 GitHub 令牌。有新版时，标题旁显示「可更新」，点击右上角「更新到 x.y.z」即可安装。检查失败后可点击「检查更新」重试。GitHub 请求限额用尽时，请稍后重试。
+插件需要 DSH 0.2.2-rc.1 或更新的受支持版本。每次打开已启用的插件详情页会自动检查更新。有新版时，标题旁显示「可更新」，点击右上角「更新到 x.y.z」即可安装。如果检查或更新失败，标题旁会显示原因。可点击「检查更新」重试。
 
-0.2.15 仍使用原有的令牌检查流程。尚未配置令牌的用户需先从 [GitHub Releases](https://github.com/kotot/dsh-crowdtest/releases/latest) 下载 `dsh-crowdtest-0.2.16.tgz` 或更新的安装包，在 DSH「插件」页添加并重启。0.2.16 不读取或删除已有更新令牌，也不改变众测任务的凭据。
+0.2.15 使用更新令牌，0.2.16 和 0.2.17 读取 GitHub REST API，可能遇到匿名请求限额。若旧版本无法更新，请从 [GitHub Releases](https://github.com/kotot/dsh-crowdtest/releases/latest) 下载 0.2.18 或更新版本的安装包，在 DSH「插件」页添加，再完全退出并重新打开 DSH。
 
-更新请求固定访问该仓库的 GitHub API，安装包跳转仅允许指定的 GitHub 资产域名。所有请求均省略身份凭据和 Cookie。0.2.15 遗留的令牌错误记录会在读取时转为重新检查提示，打开详情页后可自动检查。安装证明、待重启和恢复状态仍先行校验，读取不会改写旧记录。
+从 0.2.18 起，更新器从 `kotot/dsh-crowdtest` 的最新正式发布下载 `dsh-crowdtest-update.json`，核对 GitHub 跳转到的版本标签。清单记录发布时的版本、Release ID、安装包资产 ID、大小和 SHA-256。安装前会再次读取清单并比对这五项，再从对应标签下载 `dsh-crowdtest-<版本>.tgz`，校验实际大小和摘要。下载仅访问指定的 GitHub 仓库和资产域名，所有请求均省略身份凭据和 Cookie。
 
-更新器读取 GitHub 最新正式 Release，核对版本标签、资产 ID、带版本号的文件名、大小和 SHA-256 摘要。安装前验证包内容、DSH 版本和操作系统，并将备份包与当前安装目录逐文件比对。若原包丢失，可从当前版本的 GitHub 标签获取备份。手动重装后若已删除下载文件，点击「检查更新」会通过该版本的标签和本机文件重新验证。详情页关闭后，已接受的更新仍会继续。安装完成后请完全退出并重新打开 DSH，加载新版本。
+更新器验证包内容、DSH 版本和操作系统，并将备份包与当前安装目录逐文件比对。若原包丢失，可从当前版本的 GitHub 标签获取备份。手动重装后若已删除下载文件，点击「检查更新」会通过该版本的标签和本机文件重新验证。详情页关闭后，已接受的更新仍会继续。安装完成后请完全退出并重新打开 DSH，加载新版本。
 
 更新期间请等操作结束后再卸载、切换启用状态或从其他窗口操作同一插件。更新器在调用 DSH 安装接口前会再次核对当前安装和启用状态。DSH 在接口内部获取安装锁，也允许其他客户端使用该接口，因此在最后一次核对与取得安装锁之间仍有竞争窗口。
 
@@ -48,7 +48,7 @@ npm run pack:tarball  # 自动构建并检查，生成可安装 tarball
 
 ```sh
 node scripts/mock-crowdtest.mjs 8790
-DSH_HOME=/tmp/dsh-ct-home "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile web add "file:$PWD/dsh-crowdtest-0.2.16.tgz"
+DSH_HOME=/tmp/dsh-ct-home "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile web add "file:$PWD/dsh-crowdtest-0.2.18.tgz"
 DSH_HOME=/tmp/dsh-ct-home "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" --profile web --port 8791
 # 在 Web 界面分别领取两个独立任务：
 # /crowdtest ABCD-EFGH http://127.0.0.1:8790
@@ -63,9 +63,11 @@ DSH_HOME=/tmp/dsh-ct-home "/Applications/DeepSeek Harness.app/Contents/Resources
 
 ## 发布到 GitHub Releases
 
-在 GitHub Actions 打开「Release plugin」，点击「Run workflow」并选择 `main`。检查通过后，工作流按 `package.json` 的版本创建 Release，并上传安装包。已有同名标签时，只能从该标签对应的提交重新发布。
+在 GitHub Actions 打开「Release plugin」，点击「Run workflow」并选择 `main`。也可推送与 `package.json` 对应的版本标签来触发工作流。已有同名标签时，只能从该标签对应的提交重试。
 
-为通过检查的提交添加与 `package.json` 对应的版本标签（如 `v0.2.16`）并推送，或在 GitHub 发布该标签的 Release。发布工作流运行类型检查、测试、源码检查和 `npm pack`，将两份同内容的安装包上传到该标签的 GitHub Release。公开仓库中的 Release 和安装包可匿名下载。包声明 `private: true`，防止意外发布到 npm。
+工作流先运行类型检查、测试、源码检查和 `npm pack`。发布新版本时，工作流先为 0.2.14 起已发布的正式版本补齐更新清单，再为新版本创建草稿。它依次上传带版本号的安装包、同内容的 `dsh-crowdtest.tgz` 和更新清单，逐个下载并核对文件内容，全部通过后才公开草稿。重试草稿会复用内容相同的资产，遇到同名但不同内容的文件会报错。重试已公开版本时，工作流只核对该版本的三个文件，任何一个缺失或内容不同都会报错。
+
+如只需补齐历史清单，在 `main` 手动运行工作流时勾选 `metadata_only`。此模式只为已有正式版本补齐清单，保留标签、安装包及其资产 ID。插件和清单均可匿名下载。包声明 `private: true`，防止意外发布到 npm。
 
 安装包仅包含 `package.json`、`README.md`、`cordis.patch.yml`、`icon.png`、`usage-guide.png`、`lib/index.js` 和 `lib/client.js`。源码及安装包检查会拒绝具体的私有网关域名和常见凭据格式。
 

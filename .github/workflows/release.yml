@@ -1,14 +1,17 @@
 name: Release plugin
 on:
   workflow_dispatch:
+    inputs:
+      metadata_only:
+        description: Backfill public update manifests without creating a release
+        type: boolean
+        default: false
   push:
     tags:
       - 'v*'
-  release:
-    types: [published]
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: crowdtest-release-assets
   cancel-in-progress: false
 
 permissions:
@@ -25,38 +28,22 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - name: Verify release ref
-        run: |
-          tag="v$(node -p 'require("./package.json").version')"
-          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
-            test "$GITHUB_REF" = refs/heads/main
-          else
-            test "$GITHUB_REF" = "refs/tags/$tag"
-          fi
-          echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+      - name: Verify dispatch branch
+        if: github.event_name == 'workflow_dispatch'
+        run: test "$GITHUB_REF" = refs/heads/main
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
       - run: npm run check:source
       - run: npm pack
-      - name: Upload install packages
+        if: ${{ !inputs.metadata_only }}
+      - name: Publish release
+        if: ${{ !inputs.metadata_only }}
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
-            tag_refs=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$RELEASE_TAG" --jq '.[].ref')
-            if ! grep -Fxq -- "refs/tags/$RELEASE_TAG" <<< "$tag_refs"; then
-              gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
-                -f "ref=refs/tags/$RELEASE_TAG" -f "sha=$GITHUB_SHA" --silent
-            fi
-          fi
-          package="dsh-crowdtest-${RELEASE_TAG#v}.tgz"
-          cp "$package" dsh-crowdtest.tgz
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            publish=(upload "$RELEASE_TAG" "$package" dsh-crowdtest.tgz --clobber)
-          else
-            publish=(create "$RELEASE_TAG" "$package" dsh-crowdtest.tgz --verify-tag --generate-notes)
-          fi
-          tag_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/tags%2F$RELEASE_TAG" --jq .sha)
-          test "$tag_sha" = "$GITHUB_SHA"
-          gh release "${publish[@]}"
+        run: node --experimental-transform-types scripts/publish-update-metadata.mjs
+      - name: Backfill public update manifests
+        if: inputs.metadata_only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node --experimental-transform-types scripts/publish-update-metadata.mjs --metadata-only

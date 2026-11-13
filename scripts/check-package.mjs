@@ -49,7 +49,7 @@ export function publicationPathsFromReport(output, manifest) {
 const SOURCE_FILES = new Set([
   '.gitignore', '.npmrc', '.github/workflows/release.yml', 'README.md', 'build.mjs', 'cordis.patch.yml',
   'docs/DEVELOPMENT.md', 'icon.png', 'usage-guide.png', 'package.json', 'package-lock.json', 'pnpm-lock.yaml', 'tsconfig.json', 'vitest.config.ts',
-  'scripts/check-package.mjs', 'scripts/mock-crowdtest.mjs',
+  'scripts/check-package.mjs', 'scripts/mock-crowdtest.mjs', 'scripts/publish-update-metadata.mjs',
 ])
 
 export async function checkSource(directory = process.cwd()) {

@@ -7,7 +7,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { GitHubReleases } from '../src/update-github.ts'
 import { dispatchUpdate, PluginUpdater, type NativeBundle, type UpdatePlatform } from '../src/update-install.ts'
 import { updateErrors, type UpdateView } from '../src/update-protocol.ts'
-import { payload } from './update-fixture.ts'
+import { latestRedirect, latestUrl, packageUrl, payload, serveReleases, taggedUrl } from './update-fixture.ts'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(dir => rm(dir, { force: true, recursive: true }))) })
@@ -51,13 +51,12 @@ async function fixture(target = next, compatible: UpdatePlatform['compatible'] =
       writeFileAtomic: async (file, body, options) => { await writeFile(file + '.tmp', body, options); await rename(file + '.tmp', file) },
     },
   }
+  const serve = serveReleases(target, previous)
   const transport = vi.fn<typeof fetch>(async (url, init) => {
     expect(new Headers(init?.headers).has('authorization')).toBe(false)
     expect(new Headers(init?.headers).has('cookie')).toBe(false)
     expect(init?.credentials).toBe('omit')
-    if (String(url).endsWith('/latest')) return Response.json(target.release)
-    if (String(url).endsWith('/tags/v0.2.15')) return Response.json(previous.release)
-    return new Response(target.bytes)
+    return serve(url, init)
   })
   const github = new GitHubReleases(transport)
   const create = (running = previous.asset.version) => new PluginUpdater({ ...platform, running }, github)
@@ -82,7 +81,7 @@ it('checks public releases without a credential service and keeps journals priva
   expect(platform).not.toHaveProperty('credentials')
   await updater.check()
   expect((await updater.inspect()).status.kind).toBe('available')
-  expect(transport).toHaveBeenCalledTimes(1)
+  expect(transport.mock.calls.map(([url]) => url)).toEqual([latestUrl, taggedUrl(next.asset.version)])
   const journal = join(profile, '.crowdtest-updater', 'receipt.json')
   expect(await readFile(journal, 'utf8')).not.toContain(secret)
   expect(await updater.inspect()).not.toHaveProperty('configured')
@@ -90,7 +89,7 @@ it('checks public releases without a credential service and keeps journals priva
 })
 it.each(['0.2.15', '0.2.9'])('handles same/older %s without offering install', async version => {
   const { updater, transport, install } = await fixture()
-  transport.mockResolvedValueOnce(Response.json(payload(version).release))
+  transport.mockImplementation(serveReleases(payload(version)))
   await updater.check()
   expect((await updater.inspect()).status).toEqual({ kind: 'current' })
   expect(install).not.toHaveBeenCalled()
@@ -98,7 +97,8 @@ it.each(['0.2.15', '0.2.9'])('handles same/older %s without offering install', a
 it('revalidates a candidate before mutation and rejects a stale pin', async () => {
   const { checked, updater, transport, install } = await fixture()
   const id = await checked()
-  transport.mockResolvedValueOnce(Response.json({ ...next.release, id: 99 }))
+  transport.mockResolvedValueOnce(latestRedirect(next.asset.version))
+    .mockResolvedValueOnce(Response.json({ ...next.asset, releaseId: 99 }))
   await updater.start(id)
   expect((await settled(updater)).status).toEqual({ kind: 'failed', code: 'changed' })
   expect(install).not.toHaveBeenCalled()
@@ -148,11 +148,9 @@ it('retrieves an exact rollback tag when the original local tarball disappeared'
   const { updater, checked, previousPath, transport, install } = await fixture()
   const id = await checked()
   await rm(previousPath)
-  transport.mockResolvedValueOnce(Response.json(next.release)).mockResolvedValueOnce(new Response(next.bytes))
-    .mockResolvedValueOnce(Response.json(previous.release)).mockResolvedValueOnce(new Response(previous.bytes))
   await updater.start(id)
   expect((await settled(updater)).status.kind).toBe('restart-required')
-  expect(transport.mock.calls.some(([url]) => String(url).endsWith('/tags/v0.2.15'))).toBe(true)
+  expect(transport.mock.calls.some(([url]) => url === taggedUrl('0.2.15'))).toBe(true)
   expect(install).toHaveBeenCalledTimes(1)
 })
 it.each(['failed', 'cancelled', 'throw', 'bad-installed-bytes'])('verifies restoration after native %s', async mode => {
@@ -339,7 +337,7 @@ it.each(['0.2.16', '0.2.17'])('allows a fresh check after a healthy independent 
   const current = create(version)
   const count = transport.mock.calls.length
   await current.check()
-  expect(transport.mock.calls).toHaveLength(count + 1)
+  expect(transport.mock.calls).toHaveLength(count + 2)
   expect((await current.inspect()).status.kind).toBe('current')
 })
 
@@ -445,11 +443,7 @@ it.each([true, false])('requires the exact tag to match a manual installation af
   const latest = payload('0.2.18')
   await deploy(manual)
   Object.assign(bundle, { version: manual.asset.version, source: 'file:' + join(profile, 'removed-download.tgz') })
-  transport.mockImplementation(async url => {
-    if (String(url).endsWith('/latest')) return Response.json(latest.release)
-    if (String(url).endsWith('/tags/v0.2.17')) return Response.json(manual.release)
-    return new Response(manual.bytes)
-  })
+  transport.mockImplementation(serveReleases(latest, manual))
   const current = create(manual.asset.version)
   const count = transport.mock.calls.length
   if (!matches) {
@@ -457,11 +451,11 @@ it.each([true, false])('requires the exact tag to match a manual installation af
     const view = await dispatchUpdate(undefined, 'check', {}, async () => current)
     expect(view.actionError).toBe('rollback')
     expect((await current.inspect()).status.kind).toBe('verify-install')
-    expect(transport.mock.calls.slice(count).map(([url]) => String(url).split('/').at(-1))).toEqual(['v0.2.17', '22'])
+    expect(transport.mock.calls.slice(count).map(([url]) => url)).toEqual([taggedUrl('0.2.17'), packageUrl('0.2.17')])
     return
   }
   await current.check()
-  expect(transport.mock.calls.slice(count).map(([url]) => String(url).split('/').at(-1))).toEqual(['v0.2.17', '22', 'latest'])
+  expect(transport.mock.calls.slice(count).map(([url]) => url)).toEqual([taggedUrl('0.2.17'), packageUrl('0.2.17'), latestUrl, taggedUrl('0.2.18')])
   expect((await current.inspect()).status.kind).toBe('available')
 })
 
@@ -471,8 +465,8 @@ it('accepts a checked candidate while another window is waiting for GitHub metad
   const entered = Promise.withResolvers<void>()
   const release = Promise.withResolvers<void>()
   const resumeInstall = Promise.withResolvers<void>()
-  transport.mockImplementationOnce(async () => { entered.resolve(); await release.promise; return Response.json(next.release) })
-    .mockImplementationOnce(async () => { await resumeInstall.promise; return Response.json(next.release) })
+  transport.mockImplementationOnce(async () => { entered.resolve(); await release.promise; return latestRedirect(next.asset.version) })
+    .mockImplementationOnce(async () => { await resumeInstall.promise; return latestRedirect(next.asset.version) })
   const checking = updater.check()
   await entered.promise
   try {
@@ -503,7 +497,7 @@ it('rechecks eligibility after an unsupported installation is replaced by the or
   const reopened = create()
   expect((await reopened.inspect()).status).toEqual({ kind: 'failed', code: 'unsupported' })
   await reopened.check()
-  expect(transport.mock.calls).toHaveLength(count + 1)
+  expect(transport.mock.calls).toHaveLength(count + 2)
   expect((await reopened.inspect()).status.kind).toBe('available')
 })
 
@@ -512,7 +506,7 @@ it.each(['older', 'newer', 'error'])('retains installed proof when the release c
   await updater.start(await checked())
   await settled(updater)
   const current = create('0.2.16')
-  transport.mockResolvedValueOnce(Response.json(payload(outcome === 'older' ? '0.2.15' : '0.2.17').release))
+  transport.mockImplementation(serveReleases(payload(outcome === 'older' ? '0.2.15' : '0.2.17')))
   await current.check()
   let view = await current.inspect()
   const offer = view.status.kind === 'available' ? view.status.candidateId : undefined
@@ -541,7 +535,7 @@ it.each(['credential', 'credentialStore', 'credentialSaveUnconfirmed', 'credenti
   expect(await readFile(path, 'utf8')).toBe(stored)
   const count = transport.mock.calls.length
   await updater.check()
-  expect(transport.mock.calls).toHaveLength(count + 1)
+  expect(transport.mock.calls).toHaveLength(count + 2)
   expect((await updater.inspect()).status.kind).toBe('available')
   expect(JSON.parse(await readFile(path, 'utf8')).kind).toBe('checked')
 })

@@ -164,7 +164,28 @@ it('suppresses a stale candidate after an action error until manual retry', asyn
   await click(button('更新到 0.2.16'))
   await act(async () => window.dispatchEvent(new Event('focus')))
   expect(button('更新到 0.2.16')).toBeUndefined()
+  expect(element.querySelector('[data-slot=badge]').textContent).toContain('重新检查')
   expect(element.querySelector('[role=status]').textContent).toContain('重新检查')
   await click(button('检查更新'))
   expect(button('更新到 0.2.16')).toBeDefined()
+})
+
+it('shows an accepted job’s later failure in the header and checks again before offering install', async () => {
+  vi.useFakeTimers()
+  try {
+    view = available
+    await render(own)
+    view = { ...available, status: { kind: 'busy', phase: 'checking' } }
+    await click(button('更新到 0.2.16'))
+    view = { ...available, status: { kind: 'failed', code: 'rate' } }
+    await act(async () => vi.advanceTimersByTimeAsync(1000))
+    expect(element.querySelector('[data-slot=badge]').textContent).toContain('限额')
+    expect(element.querySelector('[data-slot=actions] button').textContent).toBe('检查更新')
+    expect(element.querySelectorAll('[role=status]')).toHaveLength(1)
+    view = { ...available, status: { kind: 'available', candidateId: 'fresh-id' } }
+    await click(button('检查更新'))
+    expect(remote.check).toHaveBeenCalledTimes(2)
+    await click(button('更新到 0.2.16'))
+    expect(remote.start).toHaveBeenLastCalledWith({ candidateId: 'fresh-id' }, expect.any(AbortSignal))
+  } finally { vi.useRealTimers() }
 })

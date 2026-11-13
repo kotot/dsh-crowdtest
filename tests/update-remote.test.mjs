@@ -6,7 +6,7 @@ import { build } from 'esbuild'
 import inc from 'semver/functions/inc.js'
 import { expect, it, vi } from 'vitest'
 import { PLUGIN_VERSION } from '../src/version.ts'
-import { payload } from './update-fixture.ts'
+import { latestUrl, payload, serveReleases, taggedUrl } from './update-fixture.ts'
 
 it('constructs and calls the native updater without accessing the credential service', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'crowdtest-native-update-'))
@@ -33,11 +33,12 @@ it('constructs and calls the native updater without accessing the credential ser
       pluginManager: { listBundles: async () => [{ name: 'dsh-crowdtest', version: PLUGIN_VERSION, source: `dsh-crowdtest@${PLUGIN_VERSION}`, installed: true, removable: true, enabled: true, official: false, availability: 'profile' }] },
       get credentials() { throw Error('Updater must not access saved credentials') },
     }
-    const transport = vi.fn(async (_url, options) => {
+    const serve = serveReleases(target)
+    const transport = vi.fn(async (url, options) => {
       expect(options.credentials).toBe('omit')
       expect(new Headers(options.headers).has('authorization')).toBe(false)
       expect(new Headers(options.headers).has('cookie')).toBe(false)
-      return Response.json(target.release)
+      return serve(url, options)
     })
     vi.stubGlobal('fetch', transport)
     const { installUpdateService } = await import(pathToFileURL(outfile).href)
@@ -45,7 +46,7 @@ it('constructs and calls the native updater without accessing the credential ser
     expect(Object.getOwnPropertyNames(Object.getPrototypeOf(ctx.crowdtestUpdate))).toEqual(['constructor', 'inspect', 'check', 'start'])
     expect(await ctx.crowdtestUpdate.inspect({})).not.toHaveProperty('configured')
     expect((await ctx.crowdtestUpdate.check({})).status.kind).toBe('available')
-    expect(transport).toHaveBeenCalledTimes(1)
+    expect(transport.mock.calls.map(([url]) => url)).toEqual([latestUrl, taggedUrl(target.asset.version)])
     expect(JSON.parse(await readFile(join(profile, '.crowdtest-updater', 'receipt.json'), 'utf8')).kind).toBe('checked')
   } finally {
     vi.unstubAllGlobals()

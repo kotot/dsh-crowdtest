@@ -3,7 +3,7 @@ import { verifyArchive } from '../src/update-archive.ts'
 import { GitHubReleases, MAX_ARCHIVE } from '../src/update-github.ts'
 import { dispatchUpdate } from '../src/update-install.ts'
 import { requests, updateDescriptors } from '../src/update-protocol.ts'
-import { payload, tar } from './update-fixture.ts'
+import { latestRedirect, latestUrl, metadataName, packageUrl, payload, taggedUrl, tar } from './update-fixture.ts'
 
 const next = payload('0.2.16')
 const secret = 'unit-test-secret'
@@ -24,54 +24,77 @@ it('requires an owner before resolving any service, including malformed calls', 
   expect(get).not.toHaveBeenCalled()
   expect(() => updateDescriptors[0]?.result.decode({ token: secret })).toThrow('Invalid CrowdTest')
 })
-it('fetches latest, rollback metadata and assets anonymously at every hop', async () => {
-  const requests: { url: string; authorization: string | null; cookie: string | null; credentials?: RequestCredentials; redirect?: string }[] = []
+it('fetches latest, rollback metadata and the versioned archive anonymously on every hop', async () => {
+  const cdn = 'https://release-assets.githubusercontent.com/test?signature=fixture'
+  const bytesUrl = cdn + '&archive=yes'
+  const tag = taggedUrl(next.asset.version)
+  const archive = packageUrl(next.asset.version)
+  const urls: string[] = []
   const transport: typeof fetch = async (input, options) => {
     const url = String(input)
-    requests.push({ url, redirect: options?.redirect, authorization: new Headers(options?.headers).get('authorization'), cookie: new Headers(options?.headers).get('cookie'), credentials: options?.credentials })
-    if (url.endsWith('/latest') || url.endsWith('/tags/v0.2.16')) return Response.json({ ...next.release, assets: [...next.release.assets, { ...next.release.assets[0], id: 27, name: 'dsh-crowdtest.tgz' }] })
-    if (url.endsWith('/assets/22')) return new Response(null, { status: 302, headers: { location: 'https://release-assets.githubusercontent.com/file?signature=fixture' } })
-    return new Response(next.bytes)
+    urls.push(url)
+    expect(new Headers(options?.headers).has('authorization')).toBe(false)
+    expect(new Headers(options?.headers).has('cookie')).toBe(false)
+    expect(options).toMatchObject({ credentials: 'omit', redirect: 'manual' })
+    if (url === latestUrl) return latestRedirect(next.asset.version)
+    if (url === tag) return Response.redirect(cdn)
+    if (url === archive) return Response.redirect(bytesUrl)
+    if (url === cdn) return Response.json(next.asset)
+    if (url === bytesUrl) return new Response(next.bytes)
+    throw Error('unexpected URL')
   }
   const github = new GitHubReleases(transport)
-  const asset = await github.metadata()
-  expect(asset).toEqual(next.asset)
+  expect(await github.metadata()).toEqual(next.asset)
   expect(await github.metadata(next.asset.version)).toEqual(next.asset)
-  expect(await github.download(asset)).toEqual(next.bytes)
-  expect(requests.map(request => request.url)).toEqual([
-    'https://api.github.com/repos/kotot/dsh-crowdtest/releases/latest',
-    'https://api.github.com/repos/kotot/dsh-crowdtest/releases/tags/v0.2.16',
-    'https://api.github.com/repos/kotot/dsh-crowdtest/releases/assets/22',
-    'https://release-assets.githubusercontent.com/file?signature=fixture',
-  ])
-  expect(requests.every(value => value.authorization === null && value.cookie === null && value.credentials === 'omit')).toBe(true)
-  expect(requests.every(value => value.redirect === 'manual')).toBe(true)
+  expect(await github.download(next.asset)).toEqual(next.bytes)
+  expect(urls).toEqual([latestUrl, tag, cdn, tag, cdn, archive, bytesUrl])
 })
 it.each(['http://objects.githubusercontent.com/a', 'https://objects.githubusercontent.com.example.test/a',
   'https://user@objects.githubusercontent.com/a', 'https://objects.githubusercontent.com:8443/a',
-  'https://api.github.com/user', 'https://example.test/asset'])('rejects an unsafe redirect before a second request (%s)', async location => {
+  'https://objects.githubusercontent.com:443/a', 'https://objects.githubusercontent.com/a#secret',
+  'https://api.github.com/user', 'https://example.test/asset', packageUrl('0.2.15')])('rejects an unsafe archive redirect (%s)', async location => {
   const transport = vi.fn(async () => new Response(null, { status: 302, headers: { location } }))
   await expect(new GitHubReleases(transport).download(next.asset)).rejects.toMatchObject({ code: 'release' })
   expect(transport).toHaveBeenCalledTimes(1)
 })
-it('bounds chained redirects and never follows a metadata redirect', async () => {
-  const transport = vi.fn(async () => new Response(null, { status: 302, headers: { location: 'https://objects.githubusercontent.com/next' } }))
-  const github = new GitHubReleases(transport)
-  await expect(github.download(next.asset)).rejects.toThrow()
-  expect(transport).toHaveBeenCalledTimes(4)
-  transport.mockClear()
-  await expect(github.metadata()).rejects.toThrow()
+it.each([
+  taggedUrl('0.2.16').replace('/kotot/', '/wrong/'), packageUrl('0.2.16'), taggedUrl('0.2.16') + '?secret',
+  taggedUrl('0.2.16') + '#', taggedUrl('0.2.16-rc.1'), taggedUrl('0.2.16+build'), taggedUrl('00.2.16'),
+  taggedUrl('0.2.16').replace('github.com/', 'github.com:443/'), 'https://objects.githubusercontent.com/file',
+])('rejects a latest redirect outside the exact repository, filename and stable tag (%s)', async location => {
+  const transport = vi.fn(async () => new Response(null, { status: 302, headers: { location } }))
+  await expect(new GitHubReleases(transport).metadata()).rejects.toMatchObject({ code: 'release' })
   expect(transport).toHaveBeenCalledTimes(1)
 })
-it.each([
-  { draft: true }, { prerelease: true }, { tag_name: 'v0.2.16-rc.1' }, { tag_name: 'vOops' },
-  { assets: [] }, { assets: [...next.release.assets, ...next.release.assets] },
-  { assets: [{ ...next.release.assets[0], size: MAX_ARCHIVE + 1 }] },
-  { assets: [{ ...next.release.assets[0], digest: null }] },
-  { assets: [{ ...next.release.assets[0], name: 'dsh-crowdtest-0.2.15.tgz' }] },
-])('rejects invalid or ambiguous release metadata %#', async overrides => {
-  const github = new GitHubReleases(async () => Response.json({ ...next.release, ...overrides }))
+it('binds latest metadata to the observed release tag', async () => {
+  const transport = vi.fn<typeof fetch>(async () => Response.json(next.asset))
+  const github = new GitHubReleases(transport)
   await expect(github.metadata()).rejects.toMatchObject({ code: 'release' })
+  transport.mockResolvedValueOnce(latestRedirect('0.2.15'))
+  await expect(github.metadata()).rejects.toMatchObject({ code: 'release' })
+})
+it('stops after three redirects and forbids a return to GitHub from the CDN', async () => {
+  const transport = vi.fn(async () => Response.redirect('https://objects.githubusercontent.com/next'))
+  const github = new GitHubReleases(transport)
+  await expect(github.download(next.asset)).rejects.toMatchObject({ code: 'release' })
+  expect(transport).toHaveBeenCalledTimes(4)
+  transport.mockClear()
+  transport.mockResolvedValueOnce(latestRedirect(next.asset.version)).mockResolvedValueOnce(Response.redirect('https://objects.githubusercontent.com/file'))
+    .mockResolvedValueOnce(Response.redirect(taggedUrl(next.asset.version, metadataName)))
+  await expect(github.metadata()).rejects.toMatchObject({ code: 'release' })
+  expect(transport).toHaveBeenCalledTimes(3)
+})
+it.each([
+  { releaseId: 0 }, { assetId: 1.5 }, { releaseId: Number.MAX_SAFE_INTEGER + 1 }, { sha256: null },
+  { size: MAX_ARCHIVE + 1 }, { size: 0 }, { sha256: 'invalid' }, { url: 'https://example.test/asset' },
+  { version: '0.2.16-rc.1' }, { version: '0.2.16+build' }, { version: '00.2.16' },
+])('rejects invalid manifest fields %#', async overrides => {
+  const github = new GitHubReleases(async () => Response.json({ ...next.asset, ...overrides }))
+  await expect(github.metadata(next.asset.version)).rejects.toMatchObject({ code: 'release' })
+})
+it('bounds the metadata stream even when content-length is absent', async () => {
+  const github = new GitHubReleases(async () => new Response(Buffer.alloc(512 * 1024 + 1)))
+  await expect(github.metadata(next.asset.version)).rejects.toThrow()
 })
 it('rejects body length and digest mismatches, and sanitizes error bodies and transport exceptions', async () => {
   for (const bytes of [Buffer.alloc(4), Buffer.alloc(next.bytes.length + 1), Buffer.alloc(next.bytes.length)]) {
@@ -95,9 +118,12 @@ it.each([
   await expect(github.metadata()).rejects.toMatchObject({ code })
 })
 it('rejects invalid rollback versions and mismatched tagged releases', async () => {
-  const transport = vi.fn(async () => Response.json(next.release))
+  const transport = vi.fn(async () => Response.json(next.asset))
   const github = new GitHubReleases(transport)
-  await expect(github.metadata('../outside')).rejects.toMatchObject({ code: 'release' })
+  for (const version of ['../outside', '01.2.16', 'v0.2.16', '0.2.16+build', '0.2.16-rc.1', '0.2.16\n']) {
+    await expect(github.metadata(version)).rejects.toMatchObject({ code: 'release' })
+    await expect(github.download({ ...next.asset, version })).rejects.toMatchObject({ code: 'release' })
+  }
   expect(transport).not.toHaveBeenCalled()
   await expect(github.metadata('0.2.15')).rejects.toMatchObject({ code: 'release' })
   expect(transport).toHaveBeenCalledTimes(1)

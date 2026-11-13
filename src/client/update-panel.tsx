@@ -27,7 +27,10 @@ function statusText(view: UpdateView): string {
 type SourceProps = { source: UpdateSource }
 function Badge({ source }: SourceProps) {
   const { view, offline, actionError } = useSyncExternalStore(source.subscribe, source.getSnapshot)
-  return !offline && !actionError && view?.status.kind === 'available' ? <Tag tone="info">可更新</Tag> : null
+  if (offline) return null
+  const failure = actionError ?? (view?.status.kind === 'failed' ? view.status.code : undefined)
+  if (failure) return <small>{updateErrors[failure]}</small>
+  return view?.status.kind === 'available' ? <Tag tone="info">可更新</Tag> : null
 }
 function Actions({ source }: SourceProps) {
   const { view, pending, offline, actionError } = useSyncExternalStore(source.subscribe, source.getSnapshot)
